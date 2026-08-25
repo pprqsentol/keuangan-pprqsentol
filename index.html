@@ -1,0 +1,44 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+<title>Aplikasi Keuangan - Roudhotul Qur'an</title>
+<link rel="manifest" href="manifest.json">
+<meta name="theme-color" content="#3b5940">
+<link rel="icon" href="icons/icon-192.png">
+<link rel="apple-touch-icon" href="icons/icon-192.png">
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+
+<div id="app" class="screen">
+  <header class="topbar">
+    <img src="icons/icon-192.png" class="topbar-logo" alt="">
+    <div>
+      <div class="topbar-title">Aplikasi Keuangan</div>
+      <div class="topbar-sub" id="syncBadge">Memuat&hellip;</div>
+    </div>
+    <button class="icon-btn" onclick="openSync()" title="Sinkron santri & cadangan data">&#8635;</button>
+  </header>
+
+  <div class="layout">
+    <nav class="sidebar" id="sidebar"></nav>
+    <main class="content" id="content"></main>
+  </div>
+
+  <nav class="bottomnav" id="bottomnav"></nav>
+</div>
+
+<div id="modalRoot"></div>
+
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
+<script src="config.js"></script>
+<script src="app.js"></script>
+<script>
+if ('serviceWorker' in navigator) {
+  window.addEventListener('load', () => navigator.serviceWorker.register('sw.js'));
+}
+</script>
+</body>
+</html>
