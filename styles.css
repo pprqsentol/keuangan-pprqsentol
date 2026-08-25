@@ -35,6 +35,7 @@ button{cursor:pointer;font-family:inherit;}
 .bottomnav .navitem{flex:1;display:flex;flex-direction:column;align-items:center;gap:2px;padding:8px 2px;background:none;border:none;color:var(--muted);font-size:10px;}
 .bottomnav .navitem.active{color:var(--green-600);}
 .bottomnav .navitem .ic{font-size:18px;}
+.navitem-logout{color:#c0392b !important;}
 
 /* Sidebar (desktop) */
 @media (min-width:800px){

@@ -1,4 +1,4 @@
-const CACHE = 'keuangan-rq-v6';
+const CACHE = 'keuangan-rq-v7';
 const FILES = [
   './', './index.html', './styles.css', './app.js', './config.js', './manifest.json',
   './icon-192.png', './icon-512.png'

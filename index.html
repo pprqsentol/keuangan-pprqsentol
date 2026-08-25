@@ -12,7 +12,21 @@
 </head>
 <body>
 
-<div id="app" class="screen">
+<div id="loginScreen" class="screen" style="display:none">
+  <div class="login-box">
+    <img src="icon-192.png" class="login-logo" alt="">
+    <h2>Aplikasi Keuangan</h2>
+    <p class="muted">Roudhotul Qur'an</p>
+    <label for="loginEmail">Email</label>
+    <input id="loginEmail" type="email" autocomplete="username" placeholder="bendahara@pprqsentol.com">
+    <label for="loginPassword">Kata sandi</label>
+    <input id="loginPassword" type="password" autocomplete="current-password" placeholder="Kata sandi" onkeydown="if(event.key==='Enter') doLogin()">
+    <p id="loginError" class="muted" style="color:#c0392b;display:none"></p>
+    <button class="btn-primary" onclick="doLogin()" id="loginBtn">Masuk</button>
+  </div>
+</div>
+
+<div id="app" class="screen" style="display:none">
   <header class="topbar">
     <img src="icon-192.png" class="topbar-logo" alt="">
     <div>
@@ -20,6 +34,7 @@
       <div class="topbar-sub" id="syncBadge">Memuat&hellip;</div>
     </div>
     <button class="icon-btn" onclick="openSync()" title="Sinkron santri & cadangan data">&#8635;</button>
+    <button class="icon-btn" onclick="doLogout()" title="Keluar">&#9211;</button>
   </header>
 
   <div class="layout">

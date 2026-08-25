@@ -64,6 +64,65 @@ try{
   }
 }catch(err){ console.error('Supabase belum dikonfigurasi', err); }
 
+/* ===== LOGIN (Supabase Auth) =====
+   RLS di database mengharuskan setiap yang menulis data (buat tagihan, dll) sudah
+   login sebagai user dengan role bendahara/admin_pusat/kasir (lihat tabel profil_akun).
+   Tanpa login, permintaan SELECT biasanya kembali kosong (diam-diam, tanpa error),
+   sedangkan permintaan INSERT/UPDATE akan DITOLAK oleh RLS dan otomatis masuk ke
+   antrean cadangan (syncQueue) berulang kali tanpa pernah berhasil. */
+async function doLogin(){
+  const email = val('loginEmail').trim();
+  const password = val('loginPassword');
+  const errEl = document.getElementById('loginError');
+  const btn = document.getElementById('loginBtn');
+  errEl.style.display = 'none';
+  if(!sb){ errEl.textContent = 'Supabase belum dikonfigurasi (config.js)'; errEl.style.display='block'; return; }
+  if(!email || !password){ errEl.textContent = 'Isi email dan kata sandi.'; errEl.style.display='block'; return; }
+  btn.disabled = true; btn.textContent = 'Memproses...';
+  try{
+    const {error} = await sb.auth.signInWithPassword({email, password});
+    if(error) throw error;
+    // onAuthStateChange akan menangani perpindahan ke layar aplikasi
+  }catch(err){
+    console.error('Gagal login', err);
+    errEl.textContent = 'Email atau kata sandi salah, atau belum terdaftar.';
+    errEl.style.display = 'block';
+  }
+  btn.disabled = false; btn.textContent = 'Masuk';
+}
+async function doLogout(){
+  if(!confirm('Keluar dari aplikasi?')) return;
+  if(sb) await sb.auth.signOut();
+  // onAuthStateChange akan menangani perpindahan kembali ke layar login
+}
+function showLoginScreen(){
+  document.getElementById('loginScreen').style.display = 'flex';
+  document.getElementById('app').style.display = 'none';
+}
+function showAppScreen(){
+  document.getElementById('loginScreen').style.display = 'none';
+  document.getElementById('app').style.display = '';
+}
+let appBooted = false;
+/* Dipanggil sekali user sudah dipastikan login, untuk memuat data & menampilkan aplikasi. */
+async function bootApp(){
+  showAppScreen();
+  if(appBooted) return; // sudah pernah boot sebelumnya (mis. login ulang tanpa reload), jangan ulang render awal
+  appBooted = true;
+  renderNav();
+  document.getElementById('content').innerHTML = '<p class="muted" style="padding:20px 4px">Memuat data&hellip;</p>';
+  await initDB();
+  generateTagihanBerulang();
+  if(sb && navigator.onLine){
+    document.getElementById('content').innerHTML = '<p class="muted" style="padding:20px 4px">Mengambil data terbaru dari Supabase&hellip;</p>';
+    try{ await pullAll(); }
+    catch(err){ console.error('Gagal mengambil data dari Supabase, memakai cadangan lokal', err); }
+  }
+  goPage('beranda');
+  updateSyncBadge();
+  trySync(); // kirim antrean cadangan (kalau ada) yang belum sempat terkirim
+}
+
 /* Setiap perubahan data dicoba kirim LANGSUNG ke Supabase dulu (sumber utama).
    Kalau berhasil, selesai (tidak masuk antrean). Kalau gagal/offline, baru disimpan
    ke antrean DB.syncQueue (dukungan IndexedDB) untuk dikirim ulang otomatis nanti. */
@@ -284,7 +343,8 @@ const NAV = [
 let currentPage='beranda';
 
 function renderNav(){
-  const html = NAV.map(i=>`<button class="navitem" data-p="${i.id}" onclick="goPage('${i.id}')"><span class="ic">${i.icon}</span><span>${i.label}</span></button>`).join('');
+  let html = NAV.map(i=>`<button class="navitem" data-p="${i.id}" onclick="goPage('${i.id}')"><span class="ic">${i.icon}</span><span>${i.label}</span></button>`).join('');
+  html += `<button class="navitem navitem-logout" onclick="doLogout()"><span class="ic">&#9211;</span><span>Log Out</span></button>`;
   document.getElementById('bottomnav').innerHTML = html;
   document.getElementById('sidebar').innerHTML = html;
 }
@@ -1257,17 +1317,15 @@ function showModal(title, bodyHtml){
 function closeModal(){ document.getElementById('modalRoot').innerHTML=''; }
 
 /* ---------- INIT ---------- */
-renderNav();
-document.getElementById('content').innerHTML = '<p class="muted" style="padding:20px 4px">Memuat data&hellip;</p>';
-initDB().then(async ()=>{
-  generateTagihanBerulang();
-  if(sb && navigator.onLine){
-    document.getElementById('content').innerHTML = '<p class="muted" style="padding:20px 4px">Mengambil data terbaru dari Supabase&hellip;</p>';
-    try{ await pullAll(); }
-    catch(err){ console.error('Gagal mengambil data dari Supabase, memakai cadangan lokal', err); }
-  }
-  goPage('beranda');
-  updateSyncBadge();
-  trySync(); // kirim antrean cadangan (kalau ada) yang belum sempat terkirim
-});
+if(!sb){
+  // config.js belum diisi -> tak ada cara login, tampilkan pesan di layar login saja
+  showLoginScreen();
+} else {
+  sb.auth.onAuthStateChange((event, session)=>{
+    if(session){ bootApp(); }
+    else { appBooted = false; showLoginScreen(); }
+  });
+  // onAuthStateChange di atas juga terpanggil sekali di awal (INITIAL_SESSION) dengan
+  // status sesi yang tersimpan, jadi tidak perlu memanggil getSession() terpisah.
+}
 document.addEventListener('visibilitychange', ()=>{ if(document.hidden) stopScan(false); });
