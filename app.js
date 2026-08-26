@@ -148,6 +148,28 @@ async function queueSync(table, op, payload){
   saveDB(DB);
   updateSyncBadge();
 }
+/* Kirim SATU operasi langsung ke Supabase dan TUNGGU hasilnya (tidak fire-and-forget,
+   tidak masuk antrean kalau gagal). Dipakai khusus untuk aksi HAPUS (tagihan, iuran) supaya
+   data di layar baru dianggap terhapus setelah Supabase benar-benar mengonfirmasi sukses --
+   mencegah kondisi "hilang di HP tapi masih ada di server" yang sebelumnya bikin data
+   duplikat/nambah sendiri saat tagihan berulang di-generate ulang.
+   Return true kalau sukses, false kalau gagal/offline (dan TIDAK disimpan ke syncQueue). */
+async function kirimLangsung(table, op, payload){
+  if(!sb || !navigator.onLine) return false;
+  try{
+    if(op==='upsert'){
+      const {error} = await sb.from(table).upsert(payload);
+      if(error) throw error;
+    } else if(op==='delete'){
+      const {error} = await sb.from(table).delete().eq('id', payload.id);
+      if(error) throw error;
+    }
+    return true;
+  }catch(err){
+    console.error('Gagal kirim langsung (aksi hapus) ke Supabase:', table, op, err);
+    return false;
+  }
+}
 let syncing = false;
 let lastSyncAt = null;
 /* Cadangan: coba kirim ulang antrean yang gagal/tertunda ke Supabase (dipanggil berkala &
@@ -1207,7 +1229,7 @@ function labelKelas(k){ return k==='Lulus'?'Lulus':(k?('Kelas '+k):'-'); }
 function getRingkasanBayarSantri(santriId){
   const today = todayStr();
   const belum = [], lunas = [];
-  DB.tagihan.filter(t=>t.santriId===santriId).forEach(t=>{
+  DB.tagihan.filter(t=>t.santriId===santriId && t.status!=='dihapus').forEach(t=>{
     const jenis = DB.jenisTagihan.find(j=>j.id===t.jenisId);
     const label = escapeHtml(jenis?jenis.nama:'Tagihan') + (t.bulan?(' &middot; '+escapeHtml(t.bulan)):'');
     if(t.status==='belum'){
@@ -1392,7 +1414,7 @@ function renderKelolaPage(){
     <div class="card-title" style="margin:20px 4px 6px">Daftar Semua Tagihan</div>
     <p class="muted" style="margin:0 4px 8px">Semua bulan ditampilkan di sini (halaman Tagihan cuma nunjukin bulan berjalan). Hapus kalau tagihan insidentil sudah lunas semua dan tidak diperlukan lagi &mdash; ikut terhapus dari database.</p>
     <div class="card">
-      ${DB.tagihan.length===0?'<p class="muted">Belum ada tagihan.</p>':DB.tagihan.slice().sort((a,b)=> b.bulan.localeCompare(a.bulan) || santriNama(a.santriId).localeCompare(santriNama(b.santriId))).map(t=>{
+      ${(()=>{const daftarTagihan = DB.tagihan.filter(t=>t.status!=='dihapus'); return daftarTagihan.length===0?'<p class="muted">Belum ada tagihan.</p>':daftarTagihan.slice().sort((a,b)=> b.bulan.localeCompare(a.bulan) || santriNama(a.santriId).localeCompare(santriNama(b.santriId))).map(t=>{
         const jenis = DB.jenisTagihan.find(j=>j.id===t.jenisId);
         return `<div class="list-item">
           <div style="flex:1">
@@ -1401,7 +1423,7 @@ function renderKelolaPage(){
           </div>
           <button class="btn btn-sm btn-danger" onclick="delTagihan('${t.id}')">Hapus</button>
         </div>`;
-      }).join('')}
+      }).join('');})()}
     </div>
 
     <div class="card-title" style="margin:20px 4px 6px">Daftar Iuran / Sosial</div>
@@ -1431,7 +1453,19 @@ function delJenisTagihan(id){ DB.jenisTagihan = DB.jenisTagihan.filter(j=>j.id!=
 // Hapus satu tagihan (SPP/insidentil/dll). Kalau statusnya sudah lunas dan dibayar pakai
 // potong saldo, saldo yang sudah terpotong TIDAK otomatis dikembalikan di sini -- riwayat
 // transaksi saldo (ledger) dibiarkan apa adanya, supaya tidak diam-diam mengubah catatan uang.
-function delTagihan(id){
+//
+// PENTING soal tagihan dari TAGIHAN BERULANG (mis. SPP): supaya bisa dihapus dengan aman
+// tanpa dibuat ulang otomatis oleh generateTagihanBerulang() (mis. saat SPP naik di tengah
+// tahun), tagihan jenis ini tidak dihapus fisik dari Supabase, tapi ditandai status:'dihapus'
+// (soft delete). Baris itu jadi hilang dari semua tampilan aplikasi, TAPI tetap "tercatat ada"
+// untuk bulan tersebut sehingga tidak akan dibuat ulang. Tagihan berulangnya sendiri tetap aktif
+// untuk bulan-bulan berikutnya. Tagihan insidentil (bukan dari tagihan berulang) tetap dihapus
+// fisik seperti biasa.
+//
+// Aksi hapus ini menunggu konfirmasi SUKSES dari Supabase dulu sebelum menghilang dari layar --
+// kalau gagal (mis. tidak ada internet), tagihan TIDAK dihapus/ditandai dan tetap tampil apa
+// adanya, supaya tidak pernah terjadi "sudah hilang di HP tapi masih ada/beda di server".
+async function delTagihan(id){
   const t = DB.tagihan.find(x=>x.id===id);
   if(!t) return;
   const jenis = DB.jenisTagihan.find(j=>j.id===t.jenisId);
@@ -1439,12 +1473,26 @@ function delTagihan(id){
   let pesan = t.status==='lunas'
     ? `Hapus tagihan "${label}" yang sudah lunas? Riwayat pembayarannya (termasuk saldo yang sudah terpotong, kalau bayar pakai saldo) TIDAK ikut dikembalikan otomatis. Tindakan ini tidak bisa dibatalkan.`
     : `Hapus tagihan "${label}"? Tindakan ini tidak bisa dibatalkan.`;
-  if(t.berulangId && t.bulan===bulanStr()){
-    pesan += ' PERHATIAN: tagihan ini dibuat otomatis dari tagihan berulang yang masih aktif untuk bulan berjalan \u2014 kalau tetap dihapus, bisa muncul lagi otomatis saat aplikasi dibuka ulang bulan ini. Nonaktifkan/hapus dulu tagihan berulangnya kalau tidak mau muncul lagi.';
+  if(t.berulangId){
+    pesan += ' Tagihan berulangnya (mis. SPP) tetap aktif untuk bulan-bulan lain \u2014 hanya tagihan bulan ini yang dihapus, dan tidak akan dibuat ulang otomatis.';
   }
   if(!confirm(pesan)) return;
-  queueSync('tagihan', 'delete', {id});
-  DB.tagihan = DB.tagihan.filter(x=>x.id!==id);
+
+  let ok;
+  if(t.berulangId){
+    ok = await kirimLangsung('tagihan', 'upsert', {id:t.id, santri_id:t.santriId, jenis_tagihan_id:t.jenisId, bulan:t.bulan, jumlah:t.jumlah, status:'dihapus', tgl_bayar:t.tglBayar, cara_bayar:t.caraBayar, jatuh_tempo:t.jatuhTempo, berulang_id:t.berulangId});
+  } else {
+    ok = await kirimLangsung('tagihan', 'delete', {id:t.id});
+  }
+  if(!ok){
+    alert('Gagal menghapus: tidak berhasil terhubung ke Supabase saat ini. Tagihan BELUM dihapus supaya data tetap aman. Coba lagi setelah koneksi internet normal.');
+    return;
+  }
+  if(t.berulangId){
+    t.status = 'dihapus';
+  } else {
+    DB.tagihan = DB.tagihan.filter(x=>x.id!==id);
+  }
   saveDB(DB);
   renderKelolaPage();
 }
@@ -1452,7 +1500,12 @@ function delTagihan(id){
 // lunas (khususnya yang dibayar pakai potong saldo), saldo yang sudah terpotong TIDAK otomatis
 // dikembalikan di sini -- riwayat transaksi saldo (ledger) dibiarkan apa adanya, supaya tidak
 // diam-diam mengubah catatan uang; koreksi saldo (kalau perlu) dilakukan manual lewat tab Saldo.
-function delIuran(id){
+// Sama seperti delTagihan: menunggu konfirmasi SUKSES dari Supabase (untuk semua item detail-nya
+// dulu, baru catatan iuran-nya) sebelum menghilang dari layar. Kalau ada satu saja yang gagal
+// terkirim (mis. tidak ada internet), proses dihentikan dan iuran TIDAK dihapus sama sekali,
+// supaya tidak pernah setengah-setengah (sebagian item terhapus di Supabase, sebagian tidak,
+// tapi sudah hilang dari layar).
+async function delIuran(id){
   const it = DB.iuran.find(x=>x.id===id);
   if(!it) return;
   const sudahBayar = it.items.filter(i=>i.status==='lunas');
@@ -1460,8 +1513,19 @@ function delIuran(id){
     ? `Hapus iuran "${it.keterangan}"? ${sudahBayar.length} santri sudah terlanjur bayar tagihan ini \u2014 riwayat pembayarannya (termasuk saldo yang sudah terpotong, kalau bayar pakai saldo) TIDAK ikut dikembalikan otomatis. Cek tab Saldo kalau perlu koreksi manual.`
     : `Hapus iuran "${it.keterangan}"? Tindakan ini tidak bisa dibatalkan.`;
   if(!confirm(pesan)) return;
-  it.items.forEach(i=>{ queueSync('iuran_detail', 'delete', {id:i.id}); });
-  queueSync('iuran', 'delete', {id});
+
+  for(const i of it.items){
+    const ok = await kirimLangsung('iuran_detail', 'delete', {id:i.id});
+    if(!ok){
+      alert('Gagal menghapus: tidak berhasil terhubung ke Supabase saat ini. Iuran BELUM dihapus supaya data tetap aman. Coba lagi setelah koneksi internet normal.');
+      return;
+    }
+  }
+  const okIuran = await kirimLangsung('iuran', 'delete', {id});
+  if(!okIuran){
+    alert('Gagal menghapus: tidak berhasil terhubung ke Supabase saat ini. Iuran BELUM dihapus supaya data tetap aman. Coba lagi setelah koneksi internet normal.');
+    return;
+  }
   DB.iuran = DB.iuran.filter(x=>x.id!==id);
   saveDB(DB);
   renderKelolaPage();
