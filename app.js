@@ -344,7 +344,8 @@ let currentPage='beranda';
 
 function renderNav(){
   let html = NAV.map(i=>`<button class="navitem" data-p="${i.id}" onclick="goPage('${i.id}')"><span class="ic">${i.icon}</span><span>${i.label}</span></button>`).join('');
-  html += `<button class="navitem navitem-logout" onclick="doLogout()"><span class="ic">&#9211;</span><span>Log Out</span></button>`;
+  html += `<button class="navitem" onclick="openSync()" title="Sinkron santri & cadangan data"><span class="ic">&#128260;</span><span>Sinkron</span></button>`;
+  html += `<button class="navitem navitem-logout" onclick="doLogout()" title="Keluar"><span class="ic">&#128682;</span><span>Keluar</span></button>`;
   document.getElementById('bottomnav').innerHTML = html;
   document.getElementById('sidebar').innerHTML = html;
 }
@@ -462,7 +463,7 @@ function renderBeranda(){
           <div style="font-weight:700;color:#c0392b">${rupiah(o.total)}</div>
         </div>`).join('')}
     </div>
-    ${DB.santri.length===0?`<div class="card"><p class="muted">Belum ada data santri. Sinkronkan dulu dari Aplikasi Pondok lewat tombol &#8635; di kanan atas.</p></div>`:''}
+    ${DB.santri.length===0?`<div class="card"><p class="muted">Belum ada data santri. Sinkronkan dulu dari Aplikasi Pondok lewat tab &#128260; Sinkron di menu navigasi.</p></div>`:''}
   `;
 }
 
@@ -537,6 +538,14 @@ function findSantriByCode(text){
   if(s) return s;
   s = DB.santri.find(x=>String(x.noInduk||'').trim()===text);
   if(s) return s;
+  // Kartu Wali & Mahram (dicetak dari Aplikasi Pondok) memakai kode "<noInduk>-WALI" atau
+  // "<noInduk>-M<n>" -- supaya wali/mahram yang mengantar juga bisa dipindai untuk urusan
+  // saldo & tagihan santrinya, tanpa perlu bawa/cari kartu santrinya sendiri.
+  const stripped = text.replace(/-(WALI|M\d+)$/i, '');
+  if(stripped !== text){
+    s = DB.santri.find(x=>String(x.noInduk||'').trim()===stripped);
+    if(s) return s;
+  }
   try{
     const obj = JSON.parse(text);
     if(obj && obj.id){ s = DB.santri.find(x=>x.id===obj.id); if(s) return s; }
@@ -554,10 +563,11 @@ function renderScanPage(){
   const supported = 'BarcodeDetector' in window;
   document.getElementById('content').innerHTML = `
     <h2>Scan QR Santri</h2>
-    <p class="muted">Pilih jenis transaksi, lalu arahkan kamera ke kartu QR santri. Cocok dipakai saat santri antre top up / tarik tunai.</p>
+    <p class="muted">Pilih jenis aksi, lalu arahkan kamera ke kartu QR santri, wali, atau mahram. Cocok dipakai saat santri/wali antre.</p>
     <div class="card">
-      <div class="card-title">Jenis transaksi</div>
+      <div class="card-title">Jenis aksi</div>
       <div class="btn-row">
+        <button class="btn ${scanMode==='bayar'?'btn-accent':''}" onclick="setScanMode('bayar')">&#128179; Bayar Tagihan/Iuran</button>
         <button class="btn ${scanMode==='setoran'?'btn-accent':''}" onclick="setScanMode('setoran')">Top Up (Setor)</button>
         <button class="btn ${scanMode==='tarik'?'btn-accent':''}" onclick="setScanMode('tarik')">Tarik Tunai</button>
       </div>
@@ -572,7 +582,7 @@ function renderScanPage(){
         </div>
       </div>
       <div class="btn-row" id="scanStartRow">
-        <button class="btn btn-accent" onclick="startScan()">&#128247; ${scanMode?'Mulai Scan':'Pilih jenis transaksi dulu'}</button>
+        <button class="btn btn-accent" onclick="startScan()">&#128247; ${scanMode?'Mulai Scan':'Pilih jenis aksi dulu'}</button>
       </div>`}
       <label style="margin-top:14px">Atau masukkan kode manual (jika kamera/QR bermasalah)</label>
       <div class="btn-row" style="margin-top:0">
@@ -588,7 +598,7 @@ function setScanMode(m){
   renderScanPage();
 }
 async function startScan(){
-  if(!scanMode){ alert('Pilih jenis transaksi (Top Up atau Tarik Tunai) dulu'); return; }
+  if(!scanMode){ alert('Pilih jenis aksi (Bayar, Top Up, atau Tarik Tunai) dulu'); return; }
   if(!('BarcodeDetector' in window)){ alert('Perangkat ini tidak mendukung pemindai QR bawaan.'); return; }
   try{
     scanStream = await navigator.mediaDevices.getUserMedia({
@@ -661,6 +671,7 @@ function onScanDetected(text){
     document.getElementById('scanResultCard').innerHTML = `<div class="card"><p class="muted">QR/kode tidak dikenali, atau santri tidak ditemukan di data.</p></div>`;
     return;
   }
+  if(scanMode==='bayar'){ showBayarModalFromScan(s.id); return; }
   showModal((scanMode==='setoran'?'Top Up':'Tarik Tunai')+' - '+s.nama, `
     <p class="muted">Saldo saat ini: ${rupiah(saldo(s.id))}</p>
     <label>Jumlah</label>${rupiahInputHtml('sd_jumlah')}
@@ -672,11 +683,74 @@ function onScanDetected(text){
     </div>
   `);
 }
+// Ditampilkan setelah scan berhasil saat mode 'bayar': daftar tagihan+iuran santri yang belum
+// lunas (gabungan dari getRingkasanBayarSantri, sumber yang sama dipakai di tab Data Santri),
+// supaya kasir langsung tahu apa saja yang perlu dibayar tanpa harus buka tab Tagihan/Iuran dulu.
+function showBayarModalFromScan(santriId){
+  const s = DB.santri.find(x=>x.id===santriId);
+  const r = getRingkasanBayarSantri(santriId);
+  if(r.belum.length===0){
+    renderScanPage();
+    document.getElementById('scanResultCard').innerHTML = `
+      <div class="card">
+        <p class="muted">${escapeHtml(s.nama)} tidak punya tagihan/iuran yang belum bayar. &#127881;</p>
+        <div class="btn-row"><button class="btn btn-accent" onclick="startScan()">Scan santri berikutnya</button></div>
+      </div>`;
+    return;
+  }
+  showModal('Bayar - '+escapeHtml(s.nama), `
+    <p class="muted" style="margin-top:0">Saldo saat ini: ${rupiah(s.saldo)}</p>
+    <div class="card-title" style="margin-bottom:6px">Belum bayar &mdash; total ${rupiah(r.totalBelum)}</div>
+    ${renderBelumBayarListScan(r.belum)}
+    <div class="btn-row"><button class="btn" onclick="closeModal(); renderScanPage();">Tutup</button></div>
+  `);
+}
+function renderBelumBayarListScan(belum){
+  return belum.map(b=>`
+    <div class="list-item">
+      <div style="flex:1">
+        <div class="name">${b.label}</div>
+        <div class="sub">${rupiah(b.jumlah)}</div>
+        ${b.telat?`<span class="tag tag-late" style="margin-top:4px;display:inline-block">Terlambat ${b.telatHari} hari</span>`:''}
+      </div>
+      <button class="btn btn-sm btn-accent" onclick="${b.tipe==='tagihan'?`openBayarTagihan('${b.id}')`:`openBayarIuran('${b.iuranId}','${b.id}')`}">Bayar</button>
+    </div>`).join('');
+}
+// Dipanggil oleh bayarTagihan()/bayarIuran() saat pembayaran dilakukan lewat alur scan QR
+// (bukan dari tab Tagihan/Iuran biasa) -- kembali ke kartu hasil scan, tampilkan sisa
+// tunggakan santri yang sama (kalau masih ada), lalu siap untuk memindai santri berikutnya.
+function afterBayarViaScan(santriId){
+  const s = DB.santri.find(x=>x.id===santriId);
+  const r = getRingkasanBayarSantri(santriId);
+  renderScanPage();
+  if(!s){ return; }
+  if(r.belum.length===0){
+    document.getElementById('scanResultCard').innerHTML = `
+      <div class="card">
+        <p style="color:#2f7d4f;font-weight:600;margin:0 0 4px">&#10003; Pembayaran ${escapeHtml(s.nama)} berhasil. Semua tagihan/iuran lunas.</p>
+        <div class="btn-row"><button class="btn btn-accent" onclick="startScan()">Scan santri berikutnya</button></div>
+      </div>`;
+  } else {
+    document.getElementById('scanResultCard').innerHTML = `
+      <div class="card">
+        <p style="color:#2f7d4f;font-weight:600;margin:0 0 10px">&#10003; Pembayaran ${escapeHtml(s.nama)} berhasil.</p>
+        <div class="card-title" style="margin-bottom:6px">Sisa belum bayar &mdash; total ${rupiah(r.totalBelum)}</div>
+        ${renderBelumBayarListScan(r.belum)}
+        <div class="btn-row"><button class="btn btn-accent" onclick="startScan()">Scan santri berikutnya</button></div>
+      </div>`;
+  }
+}
 
 /* ---------- TAGIHAN (SPP dll) ---------- */
 function renderTagihanPage(){
   generateTagihanBerulang();
   const bln = bulanStr();
+  const today = todayStr();
+  const belum = DB.tagihan.filter(t=>t.bulan===bln && t.status==='belum');
+  const lunas = DB.tagihan.filter(t=>t.bulan===bln && t.status==='lunas');
+  const totalBelum = belum.reduce((a,b)=>a+b.jumlah,0);
+  const totalLunas = lunas.reduce((a,b)=>a+b.jumlah,0);
+  const telatCount = belum.filter(t=>t.jatuhTempo && t.jatuhTempo<today).length;
   document.getElementById('content').innerHTML = `
     <h2>Tagihan</h2>
     <div class="card">
@@ -688,20 +762,38 @@ function renderTagihanPage(){
         </div>
       </div>
     </div>
+
+    <div class="card">
+      <div class="card-title" style="margin-bottom:2px">Belum bayar bulan ini</div>
+      <div style="font-size:26px;font-weight:800;color:${belum.length?'var(--danger)':'var(--text)'}">${belum.length}</div>
+      <div class="muted">tagihan &middot; total ${rupiah(totalBelum)}</div>
+      ${telatCount?`<span class="tag tag-late" style="margin-top:6px;display:inline-block">${telatCount} sudah terlambat</span>`:''}
+      <div class="btn-row">
+        <button class="btn btn-sm" onclick="openDetailTagihan('belum')" ${belum.length===0?'disabled':''}>Lihat Detail</button>
+        <button class="btn btn-sm btn-accent" onclick="scanMode='bayar'; goPage('scan')">&#128247; Scan QR untuk Bayar</button>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-title" style="margin-bottom:2px">Sudah lunas bulan ini</div>
+      <div style="font-size:26px;font-weight:800">${lunas.length}</div>
+      <div class="muted">tagihan &middot; total ${rupiah(totalLunas)}</div>
+      <div class="btn-row">
+        <button class="btn btn-sm" onclick="openDetailTagihan('lunas')" ${lunas.length===0?'disabled':''}>Lihat Detail</button>
+      </div>
+    </div>
+
     <div class="card">
       <div class="card-title">Tagihan berulang (dibuat otomatis tiap bulan)</div>
       <p class="muted">Cocok untuk SPP dan cicilan uang wisuda &mdash; sekali dibuat, tagihan bulan berikutnya otomatis muncul sendiri tiap kali aplikasi dibuka, tanpa perlu bikin manual lagi.</p>
       ${renderBerulangList()}
     </div>
-    <div class="card">
-      <div class="card-title">Belum bayar bulan ini</div>
-      ${renderTagihanList(DB.tagihan.filter(t=>t.bulan===bln && t.status==='belum'))}
-    </div>
-    <div class="card">
-      <div class="card-title">Sudah lunas bulan ini</div>
-      ${renderTagihanList(DB.tagihan.filter(t=>t.bulan===bln && t.status==='lunas'))}
-    </div>
   `;
+}
+function openDetailTagihan(status){
+  const bln = bulanStr();
+  const items = DB.tagihan.filter(t=>t.bulan===bln && t.status===status);
+  showModal((status==='belum'?'Belum Bayar':'Sudah Lunas')+' &mdash; '+bln, renderTagihanList(items));
 }
 function renderTagihanList(items){
   if(items.length===0) return '<p class="muted">Tidak ada.</p>';
@@ -715,7 +807,7 @@ function renderTagihanList(items){
         <div class="sub">${jenis?jenis.nama:'-'} &middot; ${rupiah(t.jumlah)}${t.jatuhTempo?` &middot; jatuh tempo ${t.jatuhTempo}`:''}${t.berulangId?' &middot; <span class="muted">otomatis</span>':''}</div>
         ${telat?`<span class="tag tag-late" style="margin-top:4px;display:inline-block">Terlambat ${daysLate(t.jatuhTempo)} hari</span>`:''}
       </div>
-      ${t.status==='belum'?`<button class="btn btn-sm btn-accent" onclick="openBayarTagihan('${t.id}')">Bayar</button>`:`<span class="tag tag-nontakhossus">Lunas &middot; ${t.caraBayar==='saldo'?'Saldo':'Tunai'}</span>`}
+      ${t.status==='belum'?`<button class="btn btn-sm btn-accent" onclick="closeModal(); openBayarTagihan('${t.id}')">Bayar</button>`:`<span class="tag tag-nontakhossus">Lunas &middot; ${t.caraBayar==='saldo'?'Saldo':'Tunai'}</span>`}
     </div>`;
   }).join('');
 }
@@ -835,7 +927,8 @@ function bayarTagihan(tagihanId, cara){
   saveDB(DB);
   queueSync('tagihan', 'upsert', {id:t.id, santri_id:t.santriId, jenis_tagihan_id:t.jenisId, bulan:t.bulan, jumlah:t.jumlah, status:t.status, tgl_bayar:t.tglBayar, cara_bayar:t.caraBayar, jatuh_tempo:t.jatuhTempo, berulang_id:t.berulangId||null});
   closeModal();
-  renderTagihanPage();
+  if(currentPage==='scan' && scanMode==='bayar'){ afterBayarViaScan(t.santriId); }
+  else { renderTagihanPage(); }
 }
 
 /* ---------- TAGIHAN BERULANG (auto-generate tiap bulan, untuk SPP & cicilan wisuda) ---------- */
@@ -1029,7 +1122,8 @@ function bayarIuran(iuranId, itemId, cara){
   saveDB(DB);
   queueSync('iuran_detail', 'upsert', {id:item.id, iuran_id:it.id, santri_id:item.santriId, jumlah:item.jumlah, status:item.status, cara_bayar:item.caraBayar, tgl_bayar:item.tglBayar});
   closeModal();
-  renderIuranPage();
+  if(currentPage==='scan' && scanMode==='bayar'){ afterBayarViaScan(item.santriId); }
+  else { renderIuranPage(); }
 }
 
 /* ---------- RIWAYAT ---------- */
@@ -1279,18 +1373,50 @@ function importBackup(input){
   reader.readAsText(file);
 }
 
-/* ---------- KELOLA (jenis tagihan) ---------- */
+/* ---------- KELOLA (jenis tagihan & daftar iuran) ---------- */
 function renderKelolaPage(){
   document.getElementById('content').innerHTML = `
-    <h2>Kelola Jenis Tagihan</h2>
-    <p class="muted">Cari cadangan/impor data atau sinkron santri? Buka tombol &#8635; Sinkron di pojok kanan atas.</p>
+    <h2>Kelola</h2>
+    <p class="muted">Cari cadangan/impor data atau sinkron santri? Buka tab &#128260; Sinkron di menu navigasi.</p>
+
+    <div class="card-title" style="margin:16px 4px 6px">Jenis Tagihan</div>
     <div class="card">
-      ${DB.jenisTagihan.map(j=>`<div class="list-item"><div style="flex:1">${escapeHtml(j.nama)}</div><button class="btn btn-sm btn-danger" onclick="delJenisTagihan('${j.id}')">Hapus</button></div>`).join('')}
+      ${DB.jenisTagihan.length===0?'<p class="muted">Belum ada jenis tagihan.</p>':DB.jenisTagihan.map(j=>`<div class="list-item"><div style="flex:1">${escapeHtml(j.nama)}</div><button class="btn btn-sm btn-danger" onclick="delJenisTagihan('${j.id}')">Hapus</button></div>`).join('')}
     </div>
     <div class="card">
       <label>Jenis tagihan baru</label>
       <input id="newJenis" placeholder="Contoh: Biaya Seragam">
       <div class="btn-row"><button class="btn btn-accent" onclick="addJenisTagihan()">Tambah</button></div>
+    </div>
+
+    <div class="card-title" style="margin:20px 4px 6px">Daftar Semua Tagihan</div>
+    <p class="muted" style="margin:0 4px 8px">Semua bulan ditampilkan di sini (halaman Tagihan cuma nunjukin bulan berjalan). Hapus kalau tagihan insidentil sudah lunas semua dan tidak diperlukan lagi &mdash; ikut terhapus dari database.</p>
+    <div class="card">
+      ${DB.tagihan.length===0?'<p class="muted">Belum ada tagihan.</p>':DB.tagihan.slice().sort((a,b)=> b.bulan.localeCompare(a.bulan) || santriNama(a.santriId).localeCompare(santriNama(b.santriId))).map(t=>{
+        const jenis = DB.jenisTagihan.find(j=>j.id===t.jenisId);
+        return `<div class="list-item">
+          <div style="flex:1">
+            <div class="name">${escapeHtml(santriNama(t.santriId))} &middot; ${escapeHtml(jenis?jenis.nama:'(jenis dihapus)')}</div>
+            <div class="sub">${t.bulan} &middot; ${rupiah(t.jumlah)} &middot; ${t.status==='lunas'?'<span class="tag tag-nontakhossus">Lunas</span>':'<span class="tag tag-late">Belum</span>'}</div>
+          </div>
+          <button class="btn btn-sm btn-danger" onclick="delTagihan('${t.id}')">Hapus</button>
+        </div>`;
+      }).join('')}
+    </div>
+
+    <div class="card-title" style="margin:20px 4px 6px">Daftar Iuran / Sosial</div>
+    <p class="muted" style="margin:0 4px 8px">Hapus di sini kalau ada iuran yang salah tulis, atau iuran insidentil yang sudah lunas semua dan tidak diperlukan lagi.</p>
+    <div class="card">
+      ${DB.iuran.length===0?'<p class="muted">Belum ada catatan iuran.</p>':DB.iuran.slice().reverse().map(it=>{
+        const totalLunas = it.items.filter(i=>i.status==='lunas').length;
+        return `<div class="list-item">
+          <div style="flex:1">
+            <div class="name">${escapeHtml(it.keterangan)}</div>
+            <div class="sub">${it.tanggal} &middot; ${totalLunas}/${it.items.length} santri lunas &middot; total ${rupiah(it.items.reduce((a,b)=>a+b.jumlah,0))}</div>
+          </div>
+          <button class="btn btn-sm btn-danger" onclick="delIuran('${it.id}')">Hapus</button>
+        </div>`;
+      }).join('')}
     </div>
   `;
 }
@@ -1302,6 +1428,44 @@ function addJenisTagihan(){
   renderKelolaPage();
 }
 function delJenisTagihan(id){ DB.jenisTagihan = DB.jenisTagihan.filter(j=>j.id!==id); saveDB(DB); queueSync('jenis_tagihan', 'delete', {id}); renderKelolaPage(); }
+// Hapus satu tagihan (SPP/insidentil/dll). Kalau statusnya sudah lunas dan dibayar pakai
+// potong saldo, saldo yang sudah terpotong TIDAK otomatis dikembalikan di sini -- riwayat
+// transaksi saldo (ledger) dibiarkan apa adanya, supaya tidak diam-diam mengubah catatan uang.
+function delTagihan(id){
+  const t = DB.tagihan.find(x=>x.id===id);
+  if(!t) return;
+  const jenis = DB.jenisTagihan.find(j=>j.id===t.jenisId);
+  const label = (jenis?jenis.nama:'Tagihan')+' - '+t.bulan+' ('+santriNama(t.santriId)+')';
+  let pesan = t.status==='lunas'
+    ? `Hapus tagihan "${label}" yang sudah lunas? Riwayat pembayarannya (termasuk saldo yang sudah terpotong, kalau bayar pakai saldo) TIDAK ikut dikembalikan otomatis. Tindakan ini tidak bisa dibatalkan.`
+    : `Hapus tagihan "${label}"? Tindakan ini tidak bisa dibatalkan.`;
+  if(t.berulangId && t.bulan===bulanStr()){
+    pesan += ' PERHATIAN: tagihan ini dibuat otomatis dari tagihan berulang yang masih aktif untuk bulan berjalan \u2014 kalau tetap dihapus, bisa muncul lagi otomatis saat aplikasi dibuka ulang bulan ini. Nonaktifkan/hapus dulu tagihan berulangnya kalau tidak mau muncul lagi.';
+  }
+  if(!confirm(pesan)) return;
+  queueSync('tagihan', 'delete', {id});
+  DB.tagihan = DB.tagihan.filter(x=>x.id!==id);
+  saveDB(DB);
+  renderKelolaPage();
+}
+// Hapus satu catatan iuran beserta seluruh item santrinya. Kalau ada item yang sudah terlanjur
+// lunas (khususnya yang dibayar pakai potong saldo), saldo yang sudah terpotong TIDAK otomatis
+// dikembalikan di sini -- riwayat transaksi saldo (ledger) dibiarkan apa adanya, supaya tidak
+// diam-diam mengubah catatan uang; koreksi saldo (kalau perlu) dilakukan manual lewat tab Saldo.
+function delIuran(id){
+  const it = DB.iuran.find(x=>x.id===id);
+  if(!it) return;
+  const sudahBayar = it.items.filter(i=>i.status==='lunas');
+  const pesan = sudahBayar.length
+    ? `Hapus iuran "${it.keterangan}"? ${sudahBayar.length} santri sudah terlanjur bayar tagihan ini \u2014 riwayat pembayarannya (termasuk saldo yang sudah terpotong, kalau bayar pakai saldo) TIDAK ikut dikembalikan otomatis. Cek tab Saldo kalau perlu koreksi manual.`
+    : `Hapus iuran "${it.keterangan}"? Tindakan ini tidak bisa dibatalkan.`;
+  if(!confirm(pesan)) return;
+  it.items.forEach(i=>{ queueSync('iuran_detail', 'delete', {id:i.id}); });
+  queueSync('iuran', 'delete', {id});
+  DB.iuran = DB.iuran.filter(x=>x.id!==id);
+  saveDB(DB);
+  renderKelolaPage();
+}
 
 /* ---------- MODAL ---------- */
 function showModal(title, bodyHtml){
