@@ -437,7 +437,7 @@ table.rw tbody tr:hover{background:var(--cream);}
     </div>
     <div class="field">
       <label>Jumlah per santri (Rp)</label>
-      <input type="number" id="klJumlah" placeholder="0">
+      <input type="text" inputmode="numeric" id="klJumlah" placeholder="0" oninput="formatRibuanInput(this)">
     </div>
     <div class="field">
       <label>Mulai berlaku bulan</label>
@@ -787,7 +787,7 @@ function openTxForm(mode){
     renderBayarPilihKategori();
   } else {
     body.innerHTML = `
-      <div class="field"><label>Jumlah (Rp)</label><input type="number" id="txJumlah" placeholder="0"></div>
+      <div class="field"><label>Jumlah (Rp)</label><input type="text" inputmode="numeric" id="txJumlah" placeholder="0" oninput="formatRibuanInput(this)"></div>
       <div class="field"><label>Keterangan</label><input type="text" id="txKeterangan" placeholder="opsional"></div>`;
   }
   openModal('modalTxForm');
@@ -869,7 +869,7 @@ async function submitTxForm(){
       }
     }
   } else {
-    jumlah = Number(document.getElementById('txJumlah').value||0);
+    jumlah = angkaFromInput('txJumlah');
     keterangan = document.getElementById('txKeterangan').value || (mode==='setoran'?'Top up saldo':'Tarik tunai');
     if(jumlah <= 0){ toast('Isi jumlah yang benar'); return; }
   }
@@ -982,6 +982,15 @@ function renderRwDetailList(){
     </div>`).join('');
 }
 function labelJenis(j){ return {setoran:'Top Up', tarik:'Tarik Tunai', bayar:'Bayar'}[j]||j; }
+/* -- Format input angka ribuan pakai titik, mis. 5.000 / 100.000 / 2.500.000 -- */
+function formatRibuanInput(el){
+  const raw = el.value.replace(/\D/g,''); // buang semua kecuali digit
+  el.value = raw ? Number(raw).toLocaleString('id-ID') : '';
+}
+function angkaFromInput(id){
+  const raw = (document.getElementById(id).value||'').replace(/\D/g,'');
+  return raw ? Number(raw) : 0;
+}
 function printOneTx(txId){
   const row = STATE.transaksiSaldo.find(t=>t.id===txId); if(!row) return;
   STATE.lastReceiptData = {santri: STATE.rwSelectedSantri, row, dicatatOleh: STATE.profil?STATE.profil.nama:'-'};
@@ -1221,7 +1230,7 @@ function filterTargetSantri(target, manualIds){
 async function submitKelolaForm(){
   const kategori = document.getElementById('klJenisKategori').value;
   const nama = document.getElementById('klNama').value.trim();
-  const jumlah = Number(document.getElementById('klJumlah').value||0);
+  const jumlah = angkaFromInput('klJumlah');
   const mulaiBulan = document.getElementById('klMulaiBulan').value;
   const jatuhTempo = document.getElementById('klJatuhTempo').value;
   const target = document.getElementById('klTarget').value;
@@ -1347,7 +1356,8 @@ function renderRiwayatGlobalSantriList(){
 }
 function openRiwayatGlobalDetail(santriId){
   const s = STATE.santri.find(x=>x.id===santriId); if(!s) return;
-  const keu = STATE.transaksiSaldo.filter(t=>t.santri_id===santriId && t.status==='aktif')
+  const keu = STATE.transaksiSaldo.filter(t=>t.santri_id===santriId && t.status==='aktif'
+      && !(t.jenis==='bayar' && (t.keterangan||'').trim().toLowerCase()==='belanja toko')) // hindari duplikat dgn transaksi_toko
     .map(t=>({tanggal:t.tanggal, jenis: labelJenis(t.jenis), keterangan:t.keterangan||'', nominal: (t.jenis==='setoran'?1:-1)*Number(t.jumlah)}));
   const toko = STATE.transaksiToko.filter(t=>t.santri_id===santriId)
     .map(t=>({tanggal: t.created_at.slice(0,10), jenis:'Belanja Toko', keterangan: (t.catatan||''), nominal: -Number(t.total)}));
@@ -1358,11 +1368,21 @@ function openRiwayatGlobalDetail(santriId){
   const weekAgo = new Date(now); weekAgo.setDate(weekAgo.getDate()-7);
   const monthKey = now.toISOString().slice(0,7);
   const yearKey = now.toISOString().slice(0,4);
-  const sumAbs = (arr)=> arr.reduce((a,b)=>a+Math.abs(b.nominal),0);
-  const rekapHari = sumAbs(all.filter(x=>x.tanggal===dayKey));
-  const rekapPekan = sumAbs(all.filter(x=> new Date(x.tanggal) >= weekAgo));
-  const rekapBulan = sumAbs(all.filter(x=>x.tanggal.slice(0,7)===monthKey));
-  const rekapTahun = sumAbs(all.filter(x=>x.tanggal.slice(0,4)===yearKey));
+  const rekap = (arr)=>{
+    let masuk=0, keluar=0;
+    arr.forEach(x=>{ if(x.nominal>0) masuk+=x.nominal; else keluar+=Math.abs(x.nominal); });
+    return {masuk, keluar};
+  };
+  const rekapHari = rekap(all.filter(x=>x.tanggal===dayKey));
+  const rekapPekan = rekap(all.filter(x=> new Date(x.tanggal) >= weekAgo));
+  const rekapBulan = rekap(all.filter(x=>x.tanggal.slice(0,7)===monthKey));
+  const rekapTahun = rekap(all.filter(x=>x.tanggal.slice(0,4)===yearKey));
+  const rekapBoxHtml = (label, r)=> `
+      <div class="box">
+        <div class="l">${label}</div>
+        <div style="font-size:12px;color:var(--ok);margin-top:2px">Masuk +${rupiah(r.masuk)}</div>
+        <div style="font-size:12px;color:var(--danger)">Keluar -${rupiah(r.keluar)}</div>
+      </div>`;
 
   const rowsHtml = all.length ? `<table class="rw"><thead><tr><th>Tanggal</th><th>Jenis</th><th>Keterangan</th><th>Nominal</th></tr></thead><tbody>${
     all.map(x=>`<tr><td>${fmtDate(x.tanggal)}</td><td>${x.jenis}</td><td>${x.keterangan}</td><td style="color:${x.nominal<0?'var(--danger)':'var(--ok)'}">${x.nominal<0?'-':'+'}${rupiah(Math.abs(x.nominal))}</td></tr>`).join('')
@@ -1372,10 +1392,10 @@ function openRiwayatGlobalDetail(santriId){
   document.getElementById('bbListWrap').innerHTML = `
     ${rowsHtml}
     <div class="rekap-grid">
-      <div class="box"><div class="l">Hari ini</div><div class="v">${rupiah(rekapHari)}</div></div>
-      <div class="box"><div class="l">7 hari terakhir</div><div class="v">${rupiah(rekapPekan)}</div></div>
-      <div class="box"><div class="l">Bulan ini</div><div class="v">${rupiah(rekapBulan)}</div></div>
-      <div class="box"><div class="l">Tahun ini</div><div class="v">${rupiah(rekapTahun)}</div></div>
+      ${rekapBoxHtml('Hari ini', rekapHari)}
+      ${rekapBoxHtml('7 hari terakhir', rekapPekan)}
+      ${rekapBoxHtml('Bulan ini', rekapBulan)}
+      ${rekapBoxHtml('Tahun ini', rekapTahun)}
     </div>`;
   openModal('modalBelumBayar');
 }
