@@ -1358,9 +1358,10 @@ function openRiwayatGlobalDetail(santriId){
   const s = STATE.santri.find(x=>x.id===santriId); if(!s) return;
   const keu = STATE.transaksiSaldo.filter(t=>t.santri_id===santriId && t.status==='aktif'
       && !(t.jenis==='bayar' && (t.keterangan||'').trim().toLowerCase()==='belanja toko')) // hindari duplikat dgn transaksi_toko
-    .map(t=>({tanggal:t.tanggal, jenis: labelJenis(t.jenis), keterangan:t.keterangan||'', nominal: (t.jenis==='setoran'?1:-1)*Number(t.jumlah)}));
+    .map(t=>({tanggal:t.tanggal, jenis: labelJenis(t.jenis), keterangan:t.keterangan||'', nominal: (t.jenis==='setoran'?1:-1)*Number(t.jumlah),
+      pengaruhSaldo: !(t.jenis==='bayar' && t.metode==='tunai') })); // bayar tunai tidak memotong saldo
   const toko = STATE.transaksiToko.filter(t=>t.santri_id===santriId)
-    .map(t=>({tanggal: t.created_at.slice(0,10), jenis:'Belanja Toko', keterangan: (t.catatan||''), nominal: -Number(t.total)}));
+    .map(t=>({tanggal: t.created_at.slice(0,10), jenis:'Belanja Toko', keterangan: (t.catatan||''), nominal: -Number(t.total), pengaruhSaldo: true }));
   const all = [...keu, ...toko].sort((a,b)=> new Date(b.tanggal)-new Date(a.tanggal));
 
   const now = new Date();
@@ -1370,7 +1371,10 @@ function openRiwayatGlobalDetail(santriId){
   const yearKey = now.toISOString().slice(0,4);
   const rekap = (arr)=>{
     let masuk=0, keluar=0;
-    arr.forEach(x=>{ if(x.nominal>0) masuk+=x.nominal; else keluar+=Math.abs(x.nominal); });
+    arr.forEach(x=>{
+      if(!x.pengaruhSaldo) return; // bayar tunai: tidak memotong saldo, tidak dihitung
+      if(x.nominal>0) masuk+=x.nominal; else keluar+=Math.abs(x.nominal);
+    });
     return {masuk, keluar};
   };
   const rekapHari = rekap(all.filter(x=>x.tanggal===dayKey));
@@ -1385,7 +1389,7 @@ function openRiwayatGlobalDetail(santriId){
       </div>`;
 
   const rowsHtml = all.length ? `<table class="rw"><thead><tr><th>Tanggal</th><th>Jenis</th><th>Keterangan</th><th>Nominal</th></tr></thead><tbody>${
-    all.map(x=>`<tr><td>${fmtDate(x.tanggal)}</td><td>${x.jenis}</td><td>${x.keterangan}</td><td style="color:${x.nominal<0?'var(--danger)':'var(--ok)'}">${x.nominal<0?'-':'+'}${rupiah(Math.abs(x.nominal))}</td></tr>`).join('')
+    all.map(x=>`<tr><td>${fmtDate(x.tanggal)}</td><td>${x.jenis}</td><td>${x.keterangan}${x.pengaruhSaldo?'':' <span style="font-size:10px;color:var(--ink-soft)">(tunai, tdk hitung saldo)</span>'}</td><td style="color:${x.nominal<0?'var(--danger)':'var(--ok)'}">${x.nominal<0?'-':'+'}${rupiah(Math.abs(x.nominal))}</td></tr>`).join('')
   }</tbody></table>` : '<div class="empty">Belum ada riwayat.</div>';
 
   document.getElementById('bbTitle').textContent = 'Riwayat — '+s.nama;
