@@ -1357,7 +1357,7 @@ function renderRiwayatGlobalSantriList(){
 function openRiwayatGlobalDetail(santriId){
   const s = STATE.santri.find(x=>x.id===santriId); if(!s) return;
   const keu = STATE.transaksiSaldo.filter(t=>t.santri_id===santriId && t.status==='aktif'
-      && !(t.jenis==='bayar' && (t.keterangan||'').trim().toLowerCase()==='belanja toko')) // hindari duplikat dgn transaksi_toko
+      && !(t.jenis==='bayar' && (t.keterangan||'').trim().toLowerCase().startsWith('belanja toko'))) // hindari duplikat dgn transaksi_toko (termasuk yang ada catatan tambahan)
     .map(t=>({tanggal:t.tanggal, jenis: labelJenis(t.jenis), keterangan:t.keterangan||'', nominal: (t.jenis==='setoran'?1:-1)*Number(t.jumlah),
       pengaruhSaldo: !(t.jenis==='bayar' && t.metode==='tunai') })); // bayar tunai tidak memotong saldo
   const toko = STATE.transaksiToko.filter(t=>t.santri_id===santriId)
