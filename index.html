@@ -563,8 +563,23 @@ function toast(msg){
 }
 function fmtDate(d){ if(!d) return '-'; return new Date(d).toLocaleDateString('id-ID',{day:'2-digit',month:'short',year:'numeric'}); }
 function todayISO(){ return new Date().toISOString().slice(0,10); }
-function openModal(id){ document.getElementById(id).classList.add('show'); }
-function closeModal(id){ document.getElementById(id).classList.remove('show'); }
+function openModal(id){
+  document.getElementById(id).classList.add('show');
+  if(!sedangProsesTombolKembali && (!history.state || history.state.layer !== 'modal')){
+    history.pushState({layer:'modal'}, '');
+  }
+}
+function closeModal(id){
+  document.getElementById(id).classList.remove('show');
+  if(sedangProsesTombolKembali) return;
+  // Ditunda 1 tick: kalau closeModal ini langsung diikuti openModal lain (ganti modal,
+  // mis. detail -> form bayar), riwayat tidak jadi mundur dulu baru maju lagi.
+  setTimeout(()=>{
+    if(!document.querySelector('.modal-bg.show') && history.state && history.state.layer === 'modal'){
+      history.back();
+    }
+  }, 0);
+}
 
 /* =====================================================================
    AUTH
@@ -713,12 +728,25 @@ function renderTotalSaldo(){
    NAVIGASI TAB
 ===================================================================== */
 function switchTab(tab){
+  const tabSebelumnya = STATE.currentTab;
   STATE.currentTab = tab;
   document.querySelectorAll('.tab-panel').forEach(p=>p.classList.remove('active'));
   document.getElementById('tab-'+tab).classList.add('active');
   document.querySelectorAll('nav.bottomnav button').forEach(b=>b.classList.remove('active'));
   const btn = document.querySelector('nav.bottomnav button[data-tab="'+tab+'"]');
   if(btn) btn.classList.add('active');
+
+  // ==== Riwayat browser utk tombol kembali HP (lihat blok BACK BUTTON) ====
+  if(!sedangProsesTombolKembali && tabSebelumnya !== tab){
+    if(tab === 'santri'){
+      if(history.state && history.state.layer === 'tab') history.back();
+      else history.replaceState({layer:'home'}, '');
+    } else if(!history.state || history.state.layer !== 'tab'){
+      history.pushState({layer:'tab'}, '');
+    }
+    // Pindah antar tab lain (mis. Transaksi -> Tagihan) tidak menambah entri baru —
+    // dari tab manapun, tombol kembali tetap langsung ke tab Santri (home).
+  }
 }
 function switchSubTabTransaksi(sub){
   document.getElementById('subtab-tr-btn').classList.toggle('active', sub==='transaksi');
@@ -1040,7 +1068,10 @@ async function openQr(context){
   const wrap = document.getElementById('qrWrap-'+context);
   const willShow = !wrap.classList.contains('show');
   wrap.classList.toggle('show');
-  if(!willShow){ stopQr(); return; }
+  if(!willShow){ stopQr(); konsumsiRiwayatScan(); return; }
+  if(!sedangProsesTombolKembali && (!history.state || history.state.layer !== 'scan')){
+    history.pushState({layer:'scan'}, '');
+  }
 
   const elId = 'qrReader-'+context;
   document.getElementById(elId).innerHTML = `
@@ -1068,7 +1099,7 @@ async function openQr(context){
 
   const onScan = (decodedText) => {
     const s = findSantriByQr(decodedText);
-    stopQr(); wrap.classList.remove('show');
+    stopQr(); wrap.classList.remove('show'); konsumsiRiwayatScan();
     if(!s){ toast('Kode QR tidak cocok dengan data santri manapun'); return; }
     if(context==='tx'){ document.getElementById('txSearch').value = s.nama; renderTxSantriList(); selectTxSantri(s.id); }
     else { document.getElementById('rwSearch').value = s.nama; renderRwSantriList(); openRwDetail(s.id); }
@@ -1103,6 +1134,47 @@ function stopQr(){
     STATE.qrScanner = null; STATE.qrTorchOn = false;
   }
 }
+function konsumsiRiwayatScan(){
+  if(sedangProsesTombolKembali) return;
+  // Ditunda 1 tick, sama seperti closeModal, biar aman kalau setelah scan langsung
+  // ada modal lain yang terbuka (mis. hasil scan langsung membuka detail santri).
+  setTimeout(()=>{
+    if(!document.querySelector('.qr-wrap.show') && history.state && history.state.layer === 'scan'){
+      history.back();
+    }
+  }, 0);
+}
+
+/* =====================================================================
+   TOMBOL KEMBALI HP (hardware/gesture back)
+   Tanpa ini, browser/WebView tidak punya riwayat internal utk di-"pop", jadi tombol
+   kembali langsung menutup aplikasi dari halaman manapun. Urutan yang dibuat:
+     1) Kalau scanner QR sedang terbuka -> tutup scanner saja.
+     2) Kalau tidak, kalau ada modal terbuka -> tutup modal saja.
+     3) Kalau tidak, kalau sedang di tab selain Santri -> pindah ke tab Santri (home).
+     4) Kalau sudah di tab Santri tanpa apa pun terbuka -> biarkan browser keluar aplikasi.
+===================================================================== */
+let sedangProsesTombolKembali = false;
+history.replaceState({layer:'home'}, '');
+window.addEventListener('popstate', ()=>{
+  sedangProsesTombolKembali = true;
+  try{
+    const qrTerbuka = document.querySelector('.qr-wrap.show');
+    const modalTerbuka = document.querySelector('.modal-bg.show');
+    if(qrTerbuka){
+      stopQr();
+      qrTerbuka.classList.remove('show');
+    } else if(modalTerbuka){
+      closeModal(modalTerbuka.id);
+    } else if(STATE.currentTab !== 'santri'){
+      switchTab('santri');
+    }
+    // Kalau sudah di tab Santri & tidak ada apa pun terbuka: tidak ada lagi yang perlu
+    // ditutup di dalam aplikasi, biarkan (aplikasi akan keluar di tekanan berikutnya).
+  } finally {
+    sedangProsesTombolKembali = false;
+  }
+});
 
 /* =====================================================================
    TAB TAGIHAN & IURAN
