@@ -162,6 +162,12 @@ table.rw tbody tr:hover{background:var(--cream);}
 .rekap-grid .box .l{font-size:10.5px;color:var(--ink-soft);}
 .rekap-grid .box .v{font-size:15px;font-weight:700;color:var(--green-mid);margin-top:2px;}
 
+.lap-row{display:flex;align-items:center;gap:11px;padding:13px 4px;border-bottom:1px solid var(--border);}
+.lap-row:last-child{border-bottom:none;}
+.lap-row .lap-ic{font-size:19px;width:26px;text-align:center;flex-shrink:0;}
+.lap-row .lap-lbl{flex:1;font-size:13.5px;font-weight:600;}
+.lap-row .lap-val{font-size:15.5px;font-weight:700;}
+
 .toast{position:fixed;bottom:88px;left:50%;transform:translateX(-50%);background:var(--ink);color:#fff;padding:11px 20px;border-radius:30px;font-size:13px;z-index:80;opacity:0;transition:opacity .25s;pointer-events:none;box-shadow:0 8px 22px rgba(0,0,0,.3);}
 .toast.show{opacity:1;animation:popIn .2s ease;}
 
@@ -337,6 +343,43 @@ table.rw tbody tr:hover{background:var(--cream);}
       <div class="card"><div id="rgSantriListWrap"></div></div>
     </section>
 
+    <!-- TAB: LAPORAN -->
+    <section class="tab-panel" id="tab-laporan">
+      <div class="card">
+        <div class="field" style="margin-bottom:0">
+          <label>Rentang Waktu</label>
+          <select id="lapRange" onchange="onLapRangeChange()">
+            <option value="hari">Hari Ini</option>
+            <option value="pekan">Pekan Ini</option>
+            <option value="bulan">Bulan Ini</option>
+            <option value="tahun">Tahun Ini</option>
+            <option value="custom">Pilih Tanggal...</option>
+          </select>
+        </div>
+        <div class="btn-row" id="lapCustomRange" style="display:none;margin-top:13px">
+          <div class="field" style="flex:1;margin-bottom:0"><label>Dari</label><input type="date" id="lapDari" onchange="renderLaporanTab()"></div>
+          <div class="field" style="flex:1;margin-bottom:0"><label>Sampai</label><input type="date" id="lapSampai" onchange="renderLaporanTab()"></div>
+        </div>
+        <div style="font-size:11.5px;color:var(--ink-soft);margin-top:10px" id="lapPeriodeLabel"></div>
+      </div>
+
+      <div class="card">
+        <div class="field" style="margin-bottom:0">
+          <label>Jenis Transaksi</label>
+          <select id="lapJenis" onchange="renderLaporanTab()">
+            <option value="topup">💰 Top Up</option>
+            <option value="bayar">🧾 Bayar Tagihan/Iuran</option>
+            <option value="tarik">💵 Tarik Tunai</option>
+            <option value="belanja">🛍️ Belanja Toko</option>
+          </select>
+        </div>
+        <div class="lap-row" style="margin-top:13px">
+          <span class="lap-ic" id="lapJenisIc">💰</span><span class="lap-lbl" id="lapJenisLbl">Top Up</span>
+          <b class="lap-val" id="lapJenisVal" style="color:var(--ok)">Rp 0</b>
+        </div>
+      </div>
+    </section>
+
     <!-- TAB: SINKRON -->
     <section class="tab-panel" id="tab-sinkron">
       <div class="card">
@@ -347,6 +390,25 @@ table.rw tbody tr:hover{background:var(--cream);}
         <button class="btn btn-primary btn-block" style="margin-top:14px" onclick="manualSync()">Sinkron Sekarang</button>
       </div>
     </section>
+
+    <!-- TAB: PENGATURAN -->
+    <section class="tab-panel" id="tab-pengaturan">
+      <div class="card">
+        <h3 style="margin-bottom:6px">Reset Data Saldo</h3>
+        <p style="font-size:12.5px;color:var(--ink-soft);margin-bottom:13px">
+          Menghapus semua riwayat Top Up, Tarik Tunai, dan Bayar dari seluruh santri, sehingga saldo semua santri kembali ke Rp 0.
+          Data santri, tagihan, iuran, dan riwayat belanja toko <b>tidak</b> ikut terhapus.
+          Cocok dipakai untuk memulai catatan baru saat liburan panjang santri.
+        </p>
+        <button class="btn btn-danger btn-block" onclick="hapusSemuaDataSaldo()">🗑️ Hapus Semua Data Saldo</button>
+      </div>
+
+      <div class="card">
+        <h3 style="margin-bottom:10px">Akun</h3>
+        <p style="font-size:13px;color:var(--ink-soft)">Masuk sebagai <b id="pgUserLabel">-</b></p>
+        <button class="btn btn-outline btn-block" style="margin-top:12px" onclick="doLogout()">🚪 Keluar</button>
+      </div>
+    </section>
   </main>
 
   <nav class="bottomnav">
@@ -354,8 +416,9 @@ table.rw tbody tr:hover{background:var(--cream);}
     <button data-tab="transaksi" onclick="switchTab('transaksi')"><span class="ic">💳</span>Transaksi</button>
     <button data-tab="tagihan" onclick="switchTab('tagihan')"><span class="ic">🧾</span>Tagihan</button>
     <button data-tab="riwayat-global" onclick="switchTab('riwayat-global')"><span class="ic">📖</span>Riwayat</button>
+    <button data-tab="laporan" onclick="switchTab('laporan')"><span class="ic">📊</span>Laporan</button>
     <button data-tab="sinkron" onclick="switchTab('sinkron')"><span class="ic">🔄</span>Sinkron</button>
-    <button onclick="doLogout()"><span class="ic">🚪</span>Keluar</button>
+    <button data-tab="pengaturan" onclick="switchTab('pengaturan')"><span class="ic">⚙️</span>Atur</button>
   </nav>
 </div>
 
@@ -576,6 +639,10 @@ function closeModal(id){
   // mis. detail -> form bayar), riwayat tidak jadi mundur dulu baru maju lagi.
   setTimeout(()=>{
     if(!document.querySelector('.modal-bg.show') && history.state && history.state.layer === 'modal'){
+      // Modal sudah ditutup duluan di atas, back() ini cuma buat menyinkronkan riwayat
+      // browser. Tandai biar popstate tidak salah kira "tidak ada apa pun yang terbuka"
+      // lalu ikut pindah tab ke beranda.
+      sedangTutupProgram = true;
       history.back();
     }
   }, 0);
@@ -599,6 +666,7 @@ async function doLogin(){
     const { data: profil } = await sb.from('profil_akun').select('*').eq('id', data.user.id).maybeSingle();
     STATE.profil = profil;
     document.getElementById('userLabel').textContent = profil ? (profil.nama+' · '+profil.role) : email;
+    document.getElementById('pgUserLabel').textContent = profil ? (profil.nama+' · '+profil.role) : email;
     document.getElementById('login-screen').style.display='none';
     document.getElementById('app').style.display='block';
     await bootApp();
@@ -702,6 +770,7 @@ function renderAll(){
   renderIuranTab();
   renderKelolaList();
   renderRiwayatGlobalSantriList();
+  renderLaporanTab();
   refreshSyncPanel();
 }
 
@@ -722,6 +791,126 @@ function renderTotalSaldo(){
   let total = 0;
   STATE.santri.forEach(s=> total += saldoSantri(s.id));
   document.getElementById('totalSaldoView').textContent = rupiah(total);
+}
+
+/* =====================================================================
+   TAB LAPORAN
+===================================================================== */
+function onLapRangeChange(){
+  const sel = document.getElementById('lapRange').value;
+  const customWrap = document.getElementById('lapCustomRange');
+  if(sel === 'custom'){
+    customWrap.style.display = 'flex';
+    if(!document.getElementById('lapDari').value){
+      const now = new Date();
+      const awalBulan = new Date(now.getFullYear(), now.getMonth(), 1);
+      document.getElementById('lapDari').value = awalBulan.toISOString().slice(0,10);
+      document.getElementById('lapSampai').value = todayISO();
+    }
+  } else {
+    customWrap.style.display = 'none';
+  }
+  renderLaporanTab();
+}
+function getLaporanRange(){
+  const sel = document.getElementById('lapRange').value;
+  const now = new Date();
+  const todayStr = todayISO();
+  const fmt = (d)=> d.toISOString().slice(0,10);
+  if(sel === 'pekan'){
+    const hari = now.getDay(); // 0=Minggu..6=Sabtu
+    const mundurKeSenin = (hari===0 ? 6 : hari-1);
+    const senin = new Date(now); senin.setDate(now.getDate()-mundurKeSenin);
+    return {start: fmt(senin), end: todayStr};
+  }
+  if(sel === 'bulan'){
+    const awal = new Date(now.getFullYear(), now.getMonth(), 1);
+    return {start: fmt(awal), end: todayStr};
+  }
+  if(sel === 'tahun'){
+    const awal = new Date(now.getFullYear(), 0, 1);
+    return {start: fmt(awal), end: todayStr};
+  }
+  if(sel === 'custom'){
+    const dari = document.getElementById('lapDari').value;
+    const sampai = document.getElementById('lapSampai').value;
+    return {start: dari || todayStr, end: sampai || todayStr};
+  }
+  return {start: todayStr, end: todayStr}; // 'hari'
+}
+function renderLaporanTab(){
+  const wrapReady = document.getElementById('lapJenisVal');
+  if(!wrapReady) return; // belum dirender (mis. sebelum login)
+  const {start, end} = getLaporanRange();
+  const dalamRentang = (tgl)=> !!tgl && tgl >= start && tgl <= end;
+
+  let totalTopUp=0, totalBayar=0, totalTarik=0, totalBelanja=0;
+  STATE.transaksiSaldo.forEach(t=>{
+    if(t.status === 'dibatalkan') return;
+    if(!dalamRentang(t.tanggal)) return;
+    if(t.jenis === 'setoran') totalTopUp += Number(t.jumlah);
+    else if(t.jenis === 'tarik') totalTarik += Number(t.jumlah);
+    else if(t.jenis === 'bayar' && !(t.keterangan||'').trim().toLowerCase().startsWith('belanja toko')){
+      totalBayar += Number(t.jumlah); // hindari duplikat dgn transaksi_toko, sama seperti riwayat global
+    }
+  });
+  STATE.transaksiToko.forEach(t=>{
+    const tgl = (t.created_at||'').slice(0,10);
+    if(!dalamRentang(tgl)) return;
+    totalBelanja += Number(t.total)||0;
+  });
+
+  const jenisInfo = {
+    topup:   {ic:'💰', lbl:'Top Up',              val:totalTopUp,  color:'var(--ok)'},
+    bayar:   {ic:'🧾', lbl:'Bayar Tagihan/Iuran',  val:totalBayar,  color:'var(--green-mid)'},
+    tarik:   {ic:'💵', lbl:'Tarik Tunai',          val:totalTarik,  color:'var(--danger)'},
+    belanja: {ic:'🛍️', lbl:'Belanja Toko',        val:totalBelanja,color:'var(--gold)'}
+  };
+  const sel = document.getElementById('lapJenis').value;
+  const info = jenisInfo[sel] || jenisInfo.topup;
+  document.getElementById('lapJenisIc').textContent = info.ic;
+  document.getElementById('lapJenisLbl').textContent = info.lbl;
+  const valEl = document.getElementById('lapJenisVal');
+  valEl.textContent = rupiah(info.val);
+  valEl.style.color = info.color;
+  document.getElementById('lapPeriodeLabel').textContent = 'Periode: ' + fmtDate(start) + ' – ' + fmtDate(end);
+}
+
+/* =====================================================================
+   TAB PENGATURAN
+===================================================================== */
+async function hapusSemuaDataSaldo(){
+  if(!navigator.onLine){ toast('Harus online untuk menghapus data saldo di server'); return; }
+  const ok1 = confirm(
+    'Ini akan MENGHAPUS SEMUA riwayat Top Up, Tarik Tunai, dan Bayar dari SELURUH santri. '+
+    'Saldo semua santri akan kembali ke Rp 0.\n\n'+
+    'Data santri, tagihan, iuran, dan riwayat belanja toko TIDAK ikut terhapus.\n\n'+
+    'Lanjutkan?'
+  );
+  if(!ok1) return;
+  const teks = prompt('Tindakan ini TIDAK BISA DIBATALKAN. Ketik HAPUS (huruf besar) untuk konfirmasi:');
+  if((teks||'').trim().toUpperCase() !== 'HAPUS'){ toast('Dibatalkan'); return; }
+
+  toast('Menghapus data saldo...');
+  try{
+    const { error } = await sb.from('transaksi_saldo').delete().not('id','is',null);
+    if(error) throw error;
+
+    // buang antrean lokal terkait transaksi saldo lama, biar tidak "hidup lagi" saat sinkron berikutnya
+    const q = await idbGetAll('queue_out');
+    for(const item of q){
+      if(item.type==='insert_transaksi_saldo' || item.type==='cancel_transaksi_saldo'){
+        await idbDelete('queue_out', item.client_id);
+      }
+    }
+
+    STATE.transaksiSaldo = [];
+    await idbPutAll('cache_transaksi_saldo', []);
+    renderAll();
+    toast('Semua data saldo berhasil dihapus, saldo kembali ke Rp 0');
+  }catch(e){
+    toast('Gagal menghapus data saldo: '+(e.message||'coba lagi'));
+  }
 }
 
 /* =====================================================================
@@ -916,7 +1105,7 @@ async function submitTxForm(){
     await idbAdd('queue_out', {client_id, type:'insert_transaksi_saldo', payload:row});
   }
   closeModal('modalTxForm');
-  renderTotalSaldo(); renderSantriList(); renderTxSantriList(); refreshSyncPanel();
+  renderTotalSaldo(); renderSantriList(); renderTxSantriList(); renderLaporanTab(); refreshSyncPanel();
   if(mode === 'bayar'){ renderTagihanTab(); renderIuranTab(); }
   STATE.lastReceiptData = {santri, row, dicatatOleh: STATE.profil ? STATE.profil.nama : '-'};
   document.getElementById('txResultSummary').innerHTML = `
@@ -1050,7 +1239,7 @@ async function batalkanTx(txId){
     }
   }
   toast('Transaksi dibatalkan');
-  renderTotalSaldo(); renderRwDetailList(); renderSantriList(); refreshSyncPanel();
+  renderTotalSaldo(); renderRwDetailList(); renderSantriList(); renderLaporanTab(); refreshSyncPanel();
 }
 
 /* =====================================================================
@@ -1140,6 +1329,9 @@ function konsumsiRiwayatScan(){
   // ada modal lain yang terbuka (mis. hasil scan langsung membuka detail santri).
   setTimeout(()=>{
     if(!document.querySelector('.qr-wrap.show') && history.state && history.state.layer === 'scan'){
+      // Sama seperti di closeModal: scanner sudah ditutup duluan, back() ini cuma
+      // sinkronisasi riwayat, bukan aksi tombol kembali user.
+      sedangTutupProgram = true;
       history.back();
     }
   }, 0);
@@ -1155,8 +1347,14 @@ function konsumsiRiwayatScan(){
      4) Kalau sudah di tab Santri tanpa apa pun terbuka -> biarkan browser keluar aplikasi.
 ===================================================================== */
 let sedangProsesTombolKembali = false;
+// true kalau history.back() dipanggil oleh kode sendiri (closeModal/konsumsiRiwayatScan)
+// buat sinkronisasi riwayat setelah modal/scanner SUDAH ditutup duluan lewat tombol UI —
+// bukan karena user pencet tombol kembali HP. Popstate yang dipicu back() semacam ini
+// harus diam saja, jangan ikut pindah tab, karena tidak ada apa pun yang perlu ditutup lagi.
+let sedangTutupProgram = false;
 history.replaceState({layer:'home'}, '');
 window.addEventListener('popstate', ()=>{
+  if(sedangTutupProgram){ sedangTutupProgram = false; return; }
   sedangProsesTombolKembali = true;
   try{
     const qrTerbuka = document.querySelector('.qr-wrap.show');
@@ -1545,6 +1743,7 @@ if('serviceWorker' in navigator){
     const { data: profil } = await sb.from('profil_akun').select('*').eq('id', session.user.id).maybeSingle();
     STATE.profil = profil;
     document.getElementById('userLabel').textContent = profil ? (profil.nama+' · '+profil.role) : session.user.email;
+    document.getElementById('pgUserLabel').textContent = profil ? (profil.nama+' · '+profil.role) : session.user.email;
     document.getElementById('login-screen').style.display='none';
     document.getElementById('app').style.display='block';
     await bootApp();
