@@ -378,6 +378,11 @@ table.rw tbody tr:hover{background:var(--cream);}
           <b class="lap-val" id="lapJenisVal" style="color:var(--ok)">Rp 0</b>
         </div>
       </div>
+
+      <div class="card">
+        <h3 style="margin-bottom:10px">Daftar Riwayat</h3>
+        <div id="lapListWrap"></div>
+      </div>
     </section>
 
     <!-- TAB: SINKRON -->
@@ -844,28 +849,30 @@ function renderLaporanTab(){
   if(!wrapReady) return; // belum dirender (mis. sebelum login)
   const {start, end} = getLaporanRange();
   const dalamRentang = (tgl)=> !!tgl && tgl >= start && tgl <= end;
+  const namaSantri = (id)=> (STATE.santri.find(s=>s.id===id)||{}).nama || '-';
 
   let totalTopUp=0, totalBayar=0, totalTarik=0, totalBelanja=0;
+  const listTopUp=[], listBayar=[], listTarik=[], listBelanja=[];
   STATE.transaksiSaldo.forEach(t=>{
     if(t.status === 'dibatalkan') return;
     if(!dalamRentang(t.tanggal)) return;
-    if(t.jenis === 'setoran') totalTopUp += Number(t.jumlah);
-    else if(t.jenis === 'tarik') totalTarik += Number(t.jumlah);
+    if(t.jenis === 'setoran'){ totalTopUp += Number(t.jumlah); listTopUp.push(t); }
+    else if(t.jenis === 'tarik'){ totalTarik += Number(t.jumlah); listTarik.push(t); }
     else if(t.jenis === 'bayar' && !(t.keterangan||'').trim().toLowerCase().startsWith('belanja toko')){
-      totalBayar += Number(t.jumlah); // hindari duplikat dgn transaksi_toko, sama seperti riwayat global
+      totalBayar += Number(t.jumlah); listBayar.push(t); // hindari duplikat dgn transaksi_toko, sama seperti riwayat global
     }
   });
   STATE.transaksiToko.forEach(t=>{
     const tgl = (t.created_at||'').slice(0,10);
     if(!dalamRentang(tgl)) return;
-    totalBelanja += Number(t.total)||0;
+    totalBelanja += Number(t.total)||0; listBelanja.push(t);
   });
 
   const jenisInfo = {
-    topup:   {ic:'💰', lbl:'Top Up',              val:totalTopUp,  color:'var(--ok)'},
-    bayar:   {ic:'🧾', lbl:'Bayar Tagihan/Iuran',  val:totalBayar,  color:'var(--green-mid)'},
-    tarik:   {ic:'💵', lbl:'Tarik Tunai',          val:totalTarik,  color:'var(--danger)'},
-    belanja: {ic:'🛍️', lbl:'Belanja Toko',        val:totalBelanja,color:'var(--gold)'}
+    topup:   {ic:'💰', lbl:'Top Up',              val:totalTopUp,  color:'var(--ok)',        list:listTopUp},
+    bayar:   {ic:'🧾', lbl:'Bayar Tagihan/Iuran',  val:totalBayar,  color:'var(--green-mid)', list:listBayar},
+    tarik:   {ic:'💵', lbl:'Tarik Tunai',          val:totalTarik,  color:'var(--danger)',    list:listTarik},
+    belanja: {ic:'🛍️', lbl:'Belanja Toko',        val:totalBelanja,color:'var(--gold)',       list:listBelanja}
   };
   const sel = document.getElementById('lapJenis').value;
   const info = jenisInfo[sel] || jenisInfo.topup;
@@ -875,6 +882,30 @@ function renderLaporanTab(){
   valEl.textContent = rupiah(info.val);
   valEl.style.color = info.color;
   document.getElementById('lapPeriodeLabel').textContent = 'Periode: ' + fmtDate(start) + ' – ' + fmtDate(end);
+
+  const listWrap = document.getElementById('lapListWrap');
+  let list = info.list.slice();
+  if(sel === 'belanja'){
+    list.sort((a,b)=> new Date(b.created_at)-new Date(a.created_at));
+    listWrap.innerHTML = list.length ? list.map(t=>`
+      <div class="santri-item">
+        <div>
+          <div class="nm">${namaSantri(t.santri_id)}</div>
+          <div class="meta">${fmtDate((t.created_at||'').slice(0,10))} · ${t.catatan||''}</div>
+        </div>
+        <div class="sd">${rupiah(t.total)}</div>
+      </div>`).join('') : '<div class="empty">Tidak ada transaksi pada periode ini.</div>';
+  } else {
+    list.sort((a,b)=> new Date(b.created_at)-new Date(a.created_at));
+    listWrap.innerHTML = list.length ? list.map(t=>`
+      <div class="santri-item">
+        <div>
+          <div class="nm">${namaSantri(t.santri_id)}${t.jenis==='bayar' ? ' · '+(t.metode==='tunai'?'Tunai':'Potong Saldo') : ''}</div>
+          <div class="meta">${fmtDate(t.tanggal)} · ${t.keterangan||''}</div>
+        </div>
+        <div class="sd">${rupiah(t.jumlah)}</div>
+      </div>`).join('') : '<div class="empty">Tidak ada transaksi pada periode ini.</div>';
+  }
 }
 
 /* =====================================================================
