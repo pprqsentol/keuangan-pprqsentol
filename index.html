@@ -370,7 +370,7 @@ table.rw tbody tr:hover{background:var(--cream);}
             <option value="topup">💰 Top Up</option>
             <option value="bayar">🧾 Bayar Tagihan/Iuran</option>
             <option value="tarik">💵 Tarik Tunai</option>
-            <option value="belanja">🛍️ Belanja Toko</option>
+            <option value="belanja">🛍️ Belanja Toko (Saldo)</option>
           </select>
         </div>
         <div class="lap-row" style="margin-top:13px">
@@ -863,6 +863,8 @@ function renderLaporanTab(){
     }
   });
   STATE.transaksiToko.forEach(t=>{
+    if(t.dibatalkan) return; // transaksi yang dibatalkan tidak ikut dihitung
+    if(t.metode !== 'Saldo') return; // Laporan Keuangan cuma soal saldo — belanja Tunai/Hutang tidak menyentuh saldo santri
     const tgl = (t.created_at||'').slice(0,10);
     if(!dalamRentang(tgl)) return;
     totalBelanja += Number(t.total)||0; listBelanja.push(t);
@@ -872,7 +874,7 @@ function renderLaporanTab(){
     topup:   {ic:'💰', lbl:'Top Up',              val:totalTopUp,  color:'var(--ok)',        list:listTopUp},
     bayar:   {ic:'🧾', lbl:'Bayar Tagihan/Iuran',  val:totalBayar,  color:'var(--green-mid)', list:listBayar},
     tarik:   {ic:'💵', lbl:'Tarik Tunai',          val:totalTarik,  color:'var(--danger)',    list:listTarik},
-    belanja: {ic:'🛍️', lbl:'Belanja Toko',        val:totalBelanja,color:'var(--gold)',       list:listBelanja}
+    belanja: {ic:'🛍️', lbl:'Belanja Toko (Saldo)', val:totalBelanja,color:'var(--gold)',       list:listBelanja}
   };
   const sel = document.getElementById('lapJenis').value;
   const info = jenisInfo[sel] || jenisInfo.topup;
