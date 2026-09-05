@@ -1161,13 +1161,20 @@ async function submitTxForm(){
     tanggal: todayISO(), created_at: new Date().toISOString(),
     client_id, status: 'aktif', metode,
   };
-  STATE.transaksiSaldo.unshift(row);
-  await idbAdd('cache_transaksi_saldo', row);
-  if(navigator.onLine){
-    const {error} = await sb.from('transaksi_saldo').insert(row);
-    if(error) await idbAdd('queue_out', {client_id, type:'insert_transaksi_saldo', payload:row});
-  } else {
-    await idbAdd('queue_out', {client_id, type:'insert_transaksi_saldo', payload:row});
+  // Bayar tagihan/iuran dengan cara TUNAI tidak boleh mengurangi saldo digital sama sekali
+  // (uangnya sudah diterima tunai, bukan diambil dari saldo) — jadi baris transaksi_saldo
+  // (yang selalu dihitung sebagai pengurang saldo di mana pun saldo dihitung) hanya dibuat
+  // kalau caranya "Potong saldo". Untuk tunai, cukup status tagihan/iuran yang jadi "lunas"
+  // (sudah ditangani di atas), tidak ada baris saldo yang perlu dikirim ke server.
+  if(!(mode === 'bayar' && metode === 'tunai')){
+    STATE.transaksiSaldo.unshift(row);
+    await idbAdd('cache_transaksi_saldo', row);
+    if(navigator.onLine){
+      const {error} = await sb.from('transaksi_saldo').insert(row);
+      if(error) await idbAdd('queue_out', {client_id, type:'insert_transaksi_saldo', payload:row});
+    } else {
+      await idbAdd('queue_out', {client_id, type:'insert_transaksi_saldo', payload:row});
+    }
   }
   closeModal('modalTxForm');
   renderTotalSaldo(); renderSantriList(); renderTxSantriList(); renderLaporanTab(); refreshSyncPanel();
