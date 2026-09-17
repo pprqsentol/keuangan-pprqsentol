@@ -1,4 +1,4 @@
-const CACHE_NAME = 'keuangan-pprqsentol-v5-fix-laporan-belanja-toko';
+const CACHE_NAME = 'keuangan-pprqsentol-v7-select-kolom';
 const ASSETS = ['./', './index.html', './manifest.json', './icon-192.png', './icon-512.png', './icon-512-maskable.png'];
 const CDN_ASSETS = [
   'https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2',

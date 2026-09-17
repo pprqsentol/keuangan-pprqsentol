@@ -575,8 +575,8 @@ table.rw tbody tr:hover{background:var(--cream);}
 /* =====================================================================
    KONFIGURASI
 ===================================================================== */
-const SUPABASE_URL = 'https://hvivddbhacoppkbtiqpe.supabase.co';
-const SUPABASE_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imh2aXZkZGJoYWNvcHBrYnRpcXBlIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODc1NjMzNDksImV4cCI6MjEwMzEzOTM0OX0.x-AYbSeq8sG_roUYA-Xh-4ODl182f4okP0oCNqtyiqw';
+const SUPABASE_URL = 'https://liivvueodribjwipmbrl.supabase.co';
+const SUPABASE_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImxpaXZ2dWVvZHJpYmp3aXBtYnJsIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODk2MTI2ODIsImV4cCI6MjEwNTE4ODY4Mn0.6O8nxSNkBS4SKPRWqXiFs9AtJMHU44LnOv5f2Ar9CJ0';
 const sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
 
 let STATE = {
@@ -695,7 +695,7 @@ async function doLogin(){
     const { data, error } = await sb.auth.signInWithPassword({ email, password: pass });
     if(error) throw error;
     STATE.user = data.user;
-    const { data: profil } = await sb.from('profil_akun').select('*').eq('id', data.user.id).maybeSingle();
+    const { data: profil } = await sb.from('profil_akun').select('nama, role').eq('id', data.user.id).maybeSingle();
     STATE.profil = profil;
     document.getElementById('userLabel').textContent = profil ? (profil.nama+' · '+profil.role) : email;
     document.getElementById('pgUserLabel').textContent = profil ? (profil.nama+' · '+profil.role) : email;
@@ -756,15 +756,15 @@ async function loadAllData(){
         // pakai view santri_ringkas (bukan tabel santri langsung) -- Keuangan tidak pernah
         // pakai foto santri/wali, view ini tidak menyertakan kolom foto_url/foto_wali
         // (base64, puluhan KB/baris) supaya tidak ikut menambah egress tiap sync.
-        sb.from('santri_ringkas').select('*').eq('aktif', true).order('nama'),
-        sb.from('transaksi_saldo').select('*').order('created_at',{ascending:false}),
-        sb.from('transaksi_toko').select('*').order('created_at',{ascending:false}),
-        sb.from('tagihan').select('*').order('created_at',{ascending:false}),
-        sb.from('tagihan_berulang').select('*').eq('aktif', true),
-        sb.from('jenis_tagihan').select('*'),
-        sb.from('iuran').select('*').order('created_at',{ascending:false}),
-        sb.from('iuran_detail').select('*'),
-        sb.from('limit_belanja_santri').select('*'),
+        sb.from('santri_ringkas').select('id, nama, no_induk, jenis_kelamin, kelas, program').eq('aktif', true).order('nama'),
+        sb.from('transaksi_saldo').select('id, santri_id, jenis, jumlah, keterangan, tanggal, created_at, client_id, status, metode, transaksi_toko_id').order('created_at',{ascending:false}),
+        sb.from('transaksi_toko').select('id, santri_id, total, metode, catatan, created_at, dibatalkan').order('created_at',{ascending:false}),
+        sb.from('tagihan').select('id, santri_id, jenis_tagihan_id, bulan, jumlah, status, tgl_bayar, cara_bayar, berulang_id').order('created_at',{ascending:false}),
+        sb.from('tagihan_berulang').select('id, jenis_tagihan_id, jumlah, target, target_manual_ids, tempo_hari, mulai_bulan').eq('aktif', true),
+        sb.from('jenis_tagihan').select('id, nama'),
+        sb.from('iuran').select('id, tanggal, keterangan').order('created_at',{ascending:false}),
+        sb.from('iuran_detail').select('id, iuran_id, santri_id, jumlah, status, cara_bayar, tgl_bayar'),
+        sb.from('limit_belanja_santri').select('santri_id, limit_harian'),
       ]);
       STATE.santri = santri.data||[]; STATE.transaksiSaldo = tsaldo.data||[]; STATE.transaksiToko = ttoko.data||[];
       STATE.tagihan = tagihan.data||[]; STATE.tagihanBerulang = tberulang.data||[]; STATE.jenisTagihan = jtagihan.data||[];
@@ -1882,7 +1882,7 @@ if('serviceWorker' in navigator){
   const { data: { session } } = await sb.auth.getSession();
   if(session){
     STATE.user = session.user;
-    const { data: profil } = await sb.from('profil_akun').select('*').eq('id', session.user.id).maybeSingle();
+    const { data: profil } = await sb.from('profil_akun').select('nama, role').eq('id', session.user.id).maybeSingle();
     STATE.profil = profil;
     document.getElementById('userLabel').textContent = profil ? (profil.nama+' · '+profil.role) : session.user.email;
     document.getElementById('pgUserLabel').textContent = profil ? (profil.nama+' · '+profil.role) : session.user.email;
