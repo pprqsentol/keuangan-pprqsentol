@@ -753,7 +753,10 @@ async function loadAllData(){
   if(navigator.onLine){
     try{
       const [santri, tsaldo, ttoko, tagihan, tberulang, jtagihan, iuran, iuranDetail, limitBelanja] = await Promise.all([
-        sb.from('santri').select('*').eq('aktif', true).order('nama'),
+        // pakai view santri_ringkas (bukan tabel santri langsung) -- Keuangan tidak pernah
+        // pakai foto santri/wali, view ini tidak menyertakan kolom foto_url/foto_wali
+        // (base64, puluhan KB/baris) supaya tidak ikut menambah egress tiap sync.
+        sb.from('santri_ringkas').select('*').eq('aktif', true).order('nama'),
         sb.from('transaksi_saldo').select('*').order('created_at',{ascending:false}),
         sb.from('transaksi_toko').select('*').order('created_at',{ascending:false}),
         sb.from('tagihan').select('*').order('created_at',{ascending:false}),
