@@ -718,6 +718,28 @@ async function doLogout(){
 /* =====================================================================
    BOOT / LOAD DATA (online -> refresh cache, offline -> pakai cache)
 ===================================================================== */
+/* Egress control: push (kirim antrean lokal) dan pull (download ulang data dari
+   server) dipisah frekuensi & pemicunya.
+   - Push: murah (cuma nulis, cuma jalan kalau ada antrean) -- aman jalan terus di background.
+   - Pull: mahal (download ulang histori transaksi_saldo & transaksi_toko) --
+     HANYA dijalankan berkala selagi app ini sedang dilihat (tab/layar aktif).
+     Begitu app disembunyikan (ganti app lain, kunci layar, dsb), pull berhenti
+     total -- tidak ada egress tambahan selama tidak dipakai. Saat dibuka lagi,
+     langsung pull sekali supaya segar, lalu lanjut berkala selama aktif.
+   Cocok untuk pola pakai app Keuangan yang biasanya ramai cuma pagi hari saat
+   tarik tunai, lalu HP kadang dibiarkan terbuka tapi tidak dipegang. */
+const PUSH_INTERVAL_MS = 30000;        // 30 detik: kirim antrean lokal (kalau ada)
+const PULL_INTERVAL_ACTIVE_MS = 60000; // 1 menit: HANYA selagi app sedang aktif/terlihat
+
+let pullTimer = null;
+function startPullTimer(){
+  if(pullTimer) return;
+  pullTimer = setInterval(()=>{ if(navigator.onLine) pullFreshData(); }, PULL_INTERVAL_ACTIVE_MS);
+}
+function stopPullTimer(){
+  if(pullTimer){ clearInterval(pullTimer); pullTimer = null; }
+}
+
 async function bootApp(){
   await openIdb();
   updateOnlineIndicator();
@@ -726,8 +748,26 @@ async function bootApp(){
   switchTab('santri');
   window.addEventListener('online', ()=>{ updateOnlineIndicator(); manualSync(); });
   window.addEventListener('offline', updateOnlineIndicator);
-  setInterval(()=>{ if(navigator.onLine) flushQueue(); }, 30000);
+  setInterval(()=>{ if(navigator.onLine) pushQueueOnly(); }, PUSH_INTERVAL_MS);
+  document.addEventListener('visibilitychange', ()=>{
+    if(document.hidden){
+      stopPullTimer(); // app disembunyikan -- hentikan pull otomatis sepenuhnya
+    } else {
+      if(navigator.onLine) pullFreshData(); // baru dibuka lagi -- segarkan sekali
+      startPullTimer();
+    }
+  });
+  if(!document.hidden) startPullTimer();
   setupHeaderHeightSync();
+}
+
+/* Pull data lengkap dari server + simpan waktu sinkron terakhir. Dipanggil
+   secara berkala SELAGI app aktif (lihat startPullTimer), saat app dibuka
+   kembali dari background, dan saat pengguna menekan "Sinkron Sekarang". */
+async function pullFreshData(){
+  await loadAllData();
+  renderAll();
+  document.getElementById('sinkronLastTime').textContent = new Date().toLocaleString('id-ID');
 }
 
 /* Menjaga dropdown sticky di tab Tagihan/Iuran agar berhenti tepat di bawah header,
@@ -1820,7 +1860,18 @@ async function refreshSyncPanel(){
   document.getElementById('sinkronQueueCount').textContent = q.length;
   document.getElementById('sinkronOnlineStatus').textContent = navigator.onLine ? 'Online' : 'Offline';
 }
-async function flushQueue(){
+/* Dipanggil oleh interval 30 detik: HANYA kirim antrean lokal (queue_out) ke
+   server. Tidak melakukan download ulang data -- kalau antrean kosong, ini
+   tidak menyentuh jaringan sama sekali. Ini yang aman dipanggil sering. */
+async function pushQueueOnly(){
+  if(!navigator.onLine) return;
+  const q = await idbGetAll('queue_out');
+  if(q.length === 0) return; // tidak ada yang perlu dikirim, jangan hit network
+  await flushQueue({ skipPull:true });
+}
+
+async function flushQueue(opts){
+  opts = opts || {};
   if(!navigator.onLine) return;
   const q = await idbGetAll('queue_out');
   for(const item of q){
@@ -1858,15 +1909,19 @@ async function flushQueue(){
       await idbDelete('queue_out', item.client_id);
     }catch(e){ /* biarkan tetap di antrean, coba lagi nanti */ }
   }
-  await loadAllData();
-  renderAll();
-  document.getElementById('sinkronLastTime').textContent = new Date().toLocaleString('id-ID');
+  // Full reload cuma dijalankan kalau memang diminta (mis. dari manualSync),
+  // BUKAN otomatis tiap kali antrean diproses -- itu sumber egress besarnya.
+  if(!opts.skipPull){
+    await loadAllData();
+    renderAll();
+    document.getElementById('sinkronLastTime').textContent = new Date().toLocaleString('id-ID');
+  }
 }
 async function manualSync(){
   updateOnlineIndicator();
   if(!navigator.onLine){ toast('Masih offline'); return; }
   toast('Menyinkronkan...');
-  await flushQueue();
+  await flushQueue();   // push antrean + pull data terbaru (aksi manual, jarang terjadi -- aman full reload)
   toast('Sinkron selesai');
 }
 
