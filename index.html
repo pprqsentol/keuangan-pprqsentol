@@ -646,6 +646,50 @@ function idbDelete(store, key){
     tx.oncomplete=()=>resolve(); tx.onerror=()=>reject(tx.error);
   });
 }
+/* Simpan/replace banyak baris TANPA clear() dulu -- dipakai untuk delta sync
+   (menggabungkan baris baru/berubah ke cache yang sudah ada, bukan mengganti semuanya). */
+function idbUpsertMany(store, rows){
+  return new Promise((resolve,reject)=>{
+    if(!rows || !rows.length) return resolve();
+    const tx = idb.transaction(store,'readwrite');
+    const os = tx.objectStore(store);
+    rows.forEach(r=>os.put(r));
+    tx.oncomplete=()=>resolve(); tx.onerror=()=>reject(tx.error);
+  });
+}
+/* Hapus baris dari cache lokal yang cocok predicate -- dipakai saat kita tahu persis
+   sebuah baris sudah dihapus di server (lewat aksi kita sendiri), supaya cache tidak
+   "menghidupkan lagi" data yang sudah dihapus (delta sync berbasis updated_at tidak
+   bisa mendeteksi penghapusan baris dengan sendirinya). */
+function idbDeleteWhere(store, predicate){
+  return new Promise((resolve,reject)=>{
+    const tx = idb.transaction(store,'readwrite');
+    const os = tx.objectStore(store);
+    const req = os.openCursor();
+    req.onsuccess = (e)=>{
+      const cur = e.target.result;
+      if(cur){ if(predicate(cur.value)) cur.delete(); cur.continue(); }
+    };
+    req.onerror = ()=>reject(req.error);
+    tx.oncomplete = ()=>resolve();
+  });
+}
+/* Meta key-value kecil: dipakai untuk menyimpan cursor delta sync (updated_at
+   terakhir yang sudah diambil) per tabel, dan waktu full-resync terakhir. */
+function idbGetMeta(key){
+  return new Promise((resolve,reject)=>{
+    const tx = idb.transaction('meta','readonly');
+    const req = tx.objectStore('meta').get(key);
+    req.onsuccess=()=>resolve(req.result ? req.result.v : null); req.onerror=()=>reject(req.error);
+  });
+}
+function idbSetMeta(key, value){
+  return new Promise((resolve,reject)=>{
+    const tx = idb.transaction('meta','readwrite');
+    tx.objectStore('meta').put({k:key, v:value});
+    tx.oncomplete=()=>resolve(); tx.onerror=()=>reject(tx.error);
+  });
+}
 
 /* =====================================================================
    UTIL
@@ -716,25 +760,48 @@ async function doLogout(){
 }
 
 /* =====================================================================
-   BOOT / LOAD DATA (online -> refresh cache, offline -> pakai cache)
+   BOOT / LOAD DATA -- CACHE-FIRST + DELTA SYNC
 ===================================================================== */
-/* Egress control: push (kirim antrean lokal) dan pull (download ulang data dari
-   server) dipisah frekuensi & pemicunya.
-   - Push: murah (cuma nulis, cuma jalan kalau ada antrean) -- aman jalan terus di background.
-   - Pull: mahal (download ulang histori transaksi_saldo & transaksi_toko) --
-     HANYA dijalankan berkala selagi app ini sedang dilihat (tab/layar aktif).
-     Begitu app disembunyikan (ganti app lain, kunci layar, dsb), pull berhenti
-     total -- tidak ada egress tambahan selama tidak dipakai. Saat dibuka lagi,
-     langsung pull sekali supaya segar, lalu lanjut berkala selama aktif.
+/* Egress control (versi delta sync):
+   - Boot: tampilkan dari cache IndexedDB dulu (instan, 0 network), baru sinkron
+     di belakang layar.
+   - Tabel besar & terus bertambah (transaksi_saldo, transaksi_toko, tagihan,
+     iuran_detail): TIDAK PERNAH download ulang semuanya tiap sinkron. Kita
+     simpan cursor "updated_at terakhir yang sudah diambil" per tabel, lalu
+     tiap sinkron cuma minta baris yang updated_at-nya lebih baru dari cursor
+     itu (WHERE updated_at > cursor) dan menggabungkannya ke cache lama.
+   - Tabel kecil/master (santri, jenis_tagihan, tagihan_berulang, iuran,
+     limit_belanja) tetap diambil penuh tapi cuma saat app dibuka/terlihat lagi
+     -- bukan tiap 60 detik -- karena jarang berubah dan sudah kecil.
+   - Batasan delta-by-updated_at: penghapusan baris (bukan update) tidak
+     otomatis terdeteksi. Untuk kasus penghapusan lewat aplikasi ini sendiri,
+     cache lokal dibersihkan langsung di titik aksinya (lihat idbDeleteWhere).
+     Sebagai jaring pengaman tambahan (mis. dihapus dari perangkat lain), sekali
+     per FULL_RESYNC_INTERVAL_MS dilakukan resync penuh untuk tabel besar.
+   - Push (kirim antrean lokal) tetap terpisah & murah seperti sebelumnya.
    Cocok untuk pola pakai app Keuangan yang biasanya ramai cuma pagi hari saat
    tarik tunai, lalu HP kadang dibiarkan terbuka tapi tidak dipegang. */
-const PUSH_INTERVAL_MS = 30000;        // 30 detik: kirim antrean lokal (kalau ada)
-const PULL_INTERVAL_ACTIVE_MS = 60000; // 1 menit: HANYA selagi app sedang aktif/terlihat
+const PUSH_INTERVAL_MS = 30000;         // 30 detik: kirim antrean lokal (kalau ada)
+const PULL_INTERVAL_ACTIVE_MS = 60000;  // 1 menit: delta sync tabel besar, HANYA selagi app aktif/terlihat
+const FULL_RESYNC_INTERVAL_MS = 12*60*60*1000; // 12 jam: jaring pengaman resync penuh (menangkap penghapusan dari perangkat lain)
+
+/* Tabel besar/terus bertambah yang memakai delta sync berbasis kolom updated_at
+   (semua tabel ini sudah punya trigger set_updated_at di database). */
+const DELTA_TABLES = [
+  { key:'transaksi_saldo', cache:'cache_transaksi_saldo',
+    cols:'id, santri_id, jenis, jumlah, keterangan, tanggal, created_at, client_id, status, metode, transaksi_toko_id, updated_at' },
+  { key:'transaksi_toko', cache:'cache_transaksi_toko',
+    cols:'id, santri_id, total, metode, catatan, created_at, dibatalkan, updated_at' },
+  { key:'tagihan', cache:'cache_tagihan',
+    cols:'id, santri_id, jenis_tagihan_id, bulan, jumlah, status, tgl_bayar, cara_bayar, berulang_id, updated_at' },
+  { key:'iuran_detail', cache:'cache_iuran_detail',
+    cols:'id, iuran_id, santri_id, jumlah, status, cara_bayar, tgl_bayar, updated_at' },
+];
 
 let pullTimer = null;
 function startPullTimer(){
   if(pullTimer) return;
-  pullTimer = setInterval(()=>{ if(navigator.onLine) pullFreshData(); }, PULL_INTERVAL_ACTIVE_MS);
+  pullTimer = setInterval(()=>{ if(navigator.onLine) syncData({includeSmall:false}); }, PULL_INTERVAL_ACTIVE_MS);
 }
 function stopPullTimer(){
   if(pullTimer){ clearInterval(pullTimer); pullTimer = null; }
@@ -743,9 +810,10 @@ function stopPullTimer(){
 async function bootApp(){
   await openIdb();
   updateOnlineIndicator();
-  await loadAllData();
+  await loadFromCache();     // tampil instan dari cache lokal dulu, 0 network
   renderAll();
   switchTab('santri');
+  syncData({includeSmall:true}); // lalu sinkron di belakang layar (delta, atau full kalau memang jatuh tempo/pertama kali)
   window.addEventListener('online', ()=>{ updateOnlineIndicator(); manualSync(); });
   window.addEventListener('offline', updateOnlineIndicator);
   setInterval(()=>{ if(navigator.onLine) pushQueueOnly(); }, PUSH_INTERVAL_MS);
@@ -753,7 +821,7 @@ async function bootApp(){
     if(document.hidden){
       stopPullTimer(); // app disembunyikan -- hentikan pull otomatis sepenuhnya
     } else {
-      if(navigator.onLine) pullFreshData(); // baru dibuka lagi -- segarkan sekali
+      if(navigator.onLine) syncData({includeSmall:true}); // baru dibuka lagi -- segarkan tabel kecil + delta tabel besar
       startPullTimer();
     }
   });
@@ -761,13 +829,99 @@ async function bootApp(){
   setupHeaderHeightSync();
 }
 
-/* Pull data lengkap dari server + simpan waktu sinkron terakhir. Dipanggil
-   secara berkala SELAGI app aktif (lihat startPullTimer), saat app dibuka
-   kembali dari background, dan saat pengguna menekan "Sinkron Sekarang". */
-async function pullFreshData(){
-  await loadAllData();
-  renderAll();
-  document.getElementById('sinkronLastTime').textContent = new Date().toLocaleString('id-ID');
+/* Ambil tabel kecil/master secara penuh (murah -- jumlah barisnya sedikit).
+   Dipanggil saat boot & saat app terlihat lagi, TIDAK tiap 60 detik. */
+async function loadSmallTablesFull(){
+  const [santri, tberulang, jtagihan, iuran, limitBelanja] = await Promise.all([
+    // pakai view santri_ringkas (bukan tabel santri langsung) -- Keuangan tidak pernah
+    // pakai foto santri/wali, view ini tidak menyertakan kolom foto_url/foto_wali
+    // (base64, puluhan KB/baris) supaya tidak ikut menambah egress.
+    sb.from('santri_ringkas').select('id, nama, no_induk, jenis_kelamin, kelas, program').eq('aktif', true).order('nama'),
+    sb.from('tagihan_berulang').select('id, jenis_tagihan_id, jumlah, target, target_manual_ids, tempo_hari, mulai_bulan').eq('aktif', true),
+    sb.from('jenis_tagihan').select('id, nama'),
+    sb.from('iuran').select('id, tanggal, keterangan').order('created_at',{ascending:false}),
+    sb.from('limit_belanja_santri').select('santri_id, limit_harian'),
+  ]);
+  await Promise.all([
+    idbPutAll('cache_santri', santri.data||[]),
+    idbPutAll('cache_tagihan_berulang', tberulang.data||[]),
+    idbPutAll('cache_jenis_tagihan', jtagihan.data||[]),
+    idbPutAll('cache_iuran', iuran.data||[]),
+    idbPutAll('cache_limit_belanja', limitBelanja.data||[]),
+  ]);
+}
+
+/* Ambil SATU tabel besar secara penuh (dipakai cuma saat resync penuh jatuh
+   tempo, atau saat belum pernah sinkron sama sekali). idbPutAll (clear+put)
+   otomatis membersihkan baris yang sudah terhapus di server. */
+async function fullSyncBigTables(){
+  const results = await Promise.all(DELTA_TABLES.map(cfg=> sb.from(cfg.key).select(cfg.cols).order('updated_at',{ascending:true})));
+  for(let i=0;i<DELTA_TABLES.length;i++){
+    const cfg = DELTA_TABLES[i];
+    const rows = (results[i] && results[i].data) || [];
+    await idbPutAll(cfg.cache, rows);
+    let maxUpdated = '1970-01-01T00:00:00Z';
+    rows.forEach(r=>{ if(r.updated_at && r.updated_at > maxUpdated) maxUpdated = r.updated_at; });
+    await idbSetMeta('cursor_'+cfg.key, maxUpdated);
+  }
+}
+
+/* Delta sync SATU tabel: cuma minta baris dengan updated_at > cursor tersimpan,
+   lalu gabungkan (upsert, tanpa clear) ke cache lama. Kalau belum ada cursor
+   (belum pernah sinkron), ambil semuanya sekali sebagai baseline. */
+async function deltaSyncTable(cfg){
+  const cursor = await idbGetMeta('cursor_'+cfg.key);
+  let query = sb.from(cfg.key).select(cfg.cols).order('updated_at',{ascending:true});
+  if(cursor) query = query.gt('updated_at', cursor);
+  const { data, error } = await query;
+  if(error) throw error;
+  if(data && data.length){
+    await idbUpsertMany(cfg.cache, data);
+    let maxUpdated = cursor || '1970-01-01T00:00:00Z';
+    data.forEach(r=>{ if(r.updated_at && r.updated_at > maxUpdated) maxUpdated = r.updated_at; });
+    await idbSetMeta('cursor_'+cfg.key, maxUpdated);
+  }
+}
+
+/* Titik masuk utama sinkronisasi. opts.includeSmall: ikut segarkan tabel
+   kecil/master. opts.forceFull: paksa resync penuh tabel besar (dipakai
+   "Sinkron Sekarang" manual -- jarang terjadi, aman full). Tanpa opts ini,
+   tabel besar disinkron lewat delta (hemat egress) kecuali memang sudah
+   jatuh tempo resync penuh berkala. */
+async function syncData(opts){
+  opts = opts || {};
+  if(!navigator.onLine){ await loadFromCache(); renderAll(); return; }
+  try{
+    if(opts.includeSmall) await loadSmallTablesFull();
+    const lastFull = await idbGetMeta('last_full_sync');
+    const dueForFull = opts.forceFull || !lastFull || (Date.now() - Number(lastFull) > FULL_RESYNC_INTERVAL_MS);
+    if(dueForFull){
+      await fullSyncBigTables();
+      await idbSetMeta('last_full_sync', String(Date.now()));
+    } else {
+      for(const cfg of DELTA_TABLES) await deltaSyncTable(cfg);
+    }
+    await loadFromCache();
+    await generateDueRecurringTagihan();
+    renderAll();
+    document.getElementById('sinkronLastTime').textContent = new Date().toLocaleString('id-ID');
+  }catch(e){
+    await loadFromCache();
+    renderAll();
+  }
+}
+/* Dipakai tiap kali antrean lokal berhasil dikirim (lihat pushQueueOnly):
+   delta sync murah supaya nilai hasil trigger/perhitungan server ikut segar,
+   TANPA ikut menyegarkan tabel kecil (biar tetap murah, dipanggil sering). */
+async function deltaPullAndRender(){
+  if(!navigator.onLine) return;
+  try{
+    for(const cfg of DELTA_TABLES) await deltaSyncTable(cfg);
+    await loadFromCache();
+    await generateDueRecurringTagihan();
+    renderAll();
+    document.getElementById('sinkronLastTime').textContent = new Date().toLocaleString('id-ID');
+  }catch(e){ /* diamkan, coba lagi siklus berikutnya */ }
 }
 
 /* Menjaga dropdown sticky di tab Tagihan/Iuran agar berhenti tepat di bawah header,
@@ -789,45 +943,6 @@ function updateOnlineIndicator(){
   else{ dot.classList.add('off'); banner.classList.add('show'); if(stat) stat.textContent='Offline'; }
 }
 
-async function loadAllData(){
-  if(navigator.onLine){
-    try{
-      const [santri, tsaldo, ttoko, tagihan, tberulang, jtagihan, iuran, iuranDetail, limitBelanja] = await Promise.all([
-        // pakai view santri_ringkas (bukan tabel santri langsung) -- Keuangan tidak pernah
-        // pakai foto santri/wali, view ini tidak menyertakan kolom foto_url/foto_wali
-        // (base64, puluhan KB/baris) supaya tidak ikut menambah egress tiap sync.
-        sb.from('santri_ringkas').select('id, nama, no_induk, jenis_kelamin, kelas, program').eq('aktif', true).order('nama'),
-        sb.from('transaksi_saldo').select('id, santri_id, jenis, jumlah, keterangan, tanggal, created_at, client_id, status, metode, transaksi_toko_id').order('created_at',{ascending:false}),
-        sb.from('transaksi_toko').select('id, santri_id, total, metode, catatan, created_at, dibatalkan').order('created_at',{ascending:false}),
-        sb.from('tagihan').select('id, santri_id, jenis_tagihan_id, bulan, jumlah, status, tgl_bayar, cara_bayar, berulang_id').order('created_at',{ascending:false}),
-        sb.from('tagihan_berulang').select('id, jenis_tagihan_id, jumlah, target, target_manual_ids, tempo_hari, mulai_bulan').eq('aktif', true),
-        sb.from('jenis_tagihan').select('id, nama'),
-        sb.from('iuran').select('id, tanggal, keterangan').order('created_at',{ascending:false}),
-        sb.from('iuran_detail').select('id, iuran_id, santri_id, jumlah, status, cara_bayar, tgl_bayar'),
-        sb.from('limit_belanja_santri').select('santri_id, limit_harian'),
-      ]);
-      STATE.santri = santri.data||[]; STATE.transaksiSaldo = tsaldo.data||[]; STATE.transaksiToko = ttoko.data||[];
-      STATE.tagihan = tagihan.data||[]; STATE.tagihanBerulang = tberulang.data||[]; STATE.jenisTagihan = jtagihan.data||[];
-      STATE.iuran = iuran.data||[]; STATE.iuranDetail = iuranDetail.data||[];
-      STATE.limitBelanja = limitBelanja.data||[];
-      await Promise.all([
-        idbPutAll('cache_santri', STATE.santri),
-        idbPutAll('cache_transaksi_saldo', STATE.transaksiSaldo),
-        idbPutAll('cache_transaksi_toko', STATE.transaksiToko),
-        idbPutAll('cache_tagihan', STATE.tagihan),
-        idbPutAll('cache_tagihan_berulang', STATE.tagihanBerulang),
-        idbPutAll('cache_jenis_tagihan', STATE.jenisTagihan),
-        idbPutAll('cache_iuran', STATE.iuran),
-        idbPutAll('cache_iuran_detail', STATE.iuranDetail),
-        idbPutAll('cache_limit_belanja', STATE.limitBelanja),
-      ]);
-      await generateDueRecurringTagihan();
-      document.getElementById('sinkronLastTime').textContent = new Date().toLocaleString('id-ID');
-    }catch(e){ await loadFromCache(); }
-  } else {
-    await loadFromCache();
-  }
-}
 async function loadFromCache(){
   STATE.santri = await idbGetAll('cache_santri');
   STATE.transaksiSaldo = await idbGetAll('cache_transaksi_saldo');
@@ -1707,15 +1822,23 @@ async function hapusKelola(it){
   if(it.table === 'tagihan_berulang'){
     STATE.tagihanBerulang = STATE.tagihanBerulang.filter(b=>b.id!==it.id);
     STATE.tagihan = STATE.tagihan.filter(t=>t.berulang_id!==it.id);
+    // Cache lokal juga dibersihkan langsung -- tabel tagihan pakai delta sync
+    // (bukan full reload tiap saat), jadi baris yang dihapus di server tidak
+    // otomatis hilang dari cache kalau tidak dihapus manual di sini.
+    await idbDeleteWhere('cache_tagihan_berulang', b=>b.id===it.id);
+    await idbDeleteWhere('cache_tagihan', t=>t.berulang_id===it.id);
     if(navigator.onLine){ await sb.from('tagihan_berulang').update({aktif:false}).eq('id', it.id); await sb.from('tagihan').delete().eq('berulang_id', it.id); }
     else await idbAdd('queue_out', {client_id: uid('q_del'), type:'delete_tagihan_berulang', payload:{id: it.id}});
   } else if(it.table === 'tagihan_sekali'){
     STATE.tagihan = STATE.tagihan.filter(t=>!(t.jenis_tagihan_id===it.jid && t.bulan===it.bulan && !t.berulang_id));
+    await idbDeleteWhere('cache_tagihan', t=>t.jenis_tagihan_id===it.jid && t.bulan===it.bulan && !t.berulang_id);
     if(navigator.onLine) await sb.from('tagihan').delete().eq('jenis_tagihan_id', it.jid).eq('bulan', it.bulan).is('berulang_id', null);
     else await idbAdd('queue_out', {client_id: uid('q_del'), type:'delete_tagihan_sekali', payload:{jid: it.jid, bulan: it.bulan}});
   } else if(it.table === 'iuran'){
     STATE.iuran = STATE.iuran.filter(i=>i.id!==it.id);
     STATE.iuranDetail = STATE.iuranDetail.filter(d=>d.iuran_id!==it.id);
+    await idbDeleteWhere('cache_iuran', i=>i.id===it.id);
+    await idbDeleteWhere('cache_iuran_detail', d=>d.iuran_id===it.id);
     if(navigator.onLine) await sb.from('iuran').delete().eq('id', it.id);
     else await idbAdd('queue_out', {client_id: uid('q_del'), type:'delete_iuran', payload:{id: it.id}});
   }
@@ -1860,18 +1983,19 @@ async function refreshSyncPanel(){
   document.getElementById('sinkronQueueCount').textContent = q.length;
   document.getElementById('sinkronOnlineStatus').textContent = navigator.onLine ? 'Online' : 'Offline';
 }
-/* Dipanggil oleh interval 30 detik: HANYA kirim antrean lokal (queue_out) ke
-   server. Tidak melakukan download ulang data -- kalau antrean kosong, ini
-   tidak menyentuh jaringan sama sekali. Ini yang aman dipanggil sering. */
+/* Dipanggil oleh interval 30 detik: kirim antrean lokal (queue_out) ke server.
+   Kalau antrean kosong, ini tidak menyentuh jaringan sama sekali. Kalau ada
+   yang dikirim, disusul delta sync murah (bukan full reload) supaya nilai
+   hasil trigger/perhitungan server ikut segar. */
 async function pushQueueOnly(){
   if(!navigator.onLine) return;
   const q = await idbGetAll('queue_out');
   if(q.length === 0) return; // tidak ada yang perlu dikirim, jangan hit network
-  await flushQueue({ skipPull:true });
+  await flushQueue();
+  await deltaPullAndRender();
 }
 
-async function flushQueue(opts){
-  opts = opts || {};
+async function flushQueue(){
   if(!navigator.onLine) return;
   const q = await idbGetAll('queue_out');
   for(const item of q){
@@ -1897,10 +2021,15 @@ async function flushQueue(opts){
       } else if(item.type === 'delete_tagihan_berulang'){
         await sb.from('tagihan_berulang').update({aktif:false}).eq('id', item.payload.id);
         await sb.from('tagihan').delete().eq('berulang_id', item.payload.id);
+        // tabel tagihan pakai delta sync (bukan full reload), jadi baris yang
+        // baru dihapus ini tidak akan otomatis hilang dari cache lokal -- bersihkan manual.
+        await idbDeleteWhere('cache_tagihan', t=>t.berulang_id===item.payload.id);
       } else if(item.type === 'delete_tagihan_sekali'){
         await sb.from('tagihan').delete().eq('jenis_tagihan_id', item.payload.jid).eq('bulan', item.payload.bulan).is('berulang_id', null);
+        await idbDeleteWhere('cache_tagihan', t=>t.jenis_tagihan_id===item.payload.jid && t.bulan===item.payload.bulan && !t.berulang_id);
       } else if(item.type === 'delete_iuran'){
         await sb.from('iuran').delete().eq('id', item.payload.id);
+        await idbDeleteWhere('cache_iuran_detail', d=>d.iuran_id===item.payload.id);
       } else if(item.type === 'upsert_limit_belanja'){
         await sb.from('limit_belanja_santri').upsert(item.payload);
       } else if(item.type === 'delete_limit_belanja'){
@@ -1909,19 +2038,13 @@ async function flushQueue(opts){
       await idbDelete('queue_out', item.client_id);
     }catch(e){ /* biarkan tetap di antrean, coba lagi nanti */ }
   }
-  // Full reload cuma dijalankan kalau memang diminta (mis. dari manualSync),
-  // BUKAN otomatis tiap kali antrean diproses -- itu sumber egress besarnya.
-  if(!opts.skipPull){
-    await loadAllData();
-    renderAll();
-    document.getElementById('sinkronLastTime').textContent = new Date().toLocaleString('id-ID');
-  }
 }
 async function manualSync(){
   updateOnlineIndicator();
   if(!navigator.onLine){ toast('Masih offline'); return; }
   toast('Menyinkronkan...');
-  await flushQueue();   // push antrean + pull data terbaru (aksi manual, jarang terjadi -- aman full reload)
+  await flushQueue();                                   // push antrean dulu
+  await syncData({ includeSmall:true, forceFull:true }); // aksi manual, jarang terjadi -- aman full resync
   toast('Sinkron selesai');
 }
 
