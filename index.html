@@ -779,11 +779,21 @@ async function doLogout(){
      Sebagai jaring pengaman tambahan (mis. dihapus dari perangkat lain), sekali
      per FULL_RESYNC_INTERVAL_MS dilakukan resync penuh untuk tabel besar.
    - Push (kirim antrean lokal) tetap terpisah & murah seperti sebelumnya.
+   - Pemicu utama delta sync sekarang Realtime (lihat startRealtimeSubscriptions),
+     bukan timer: server yang kasih tahu kalau ada baris berubah di 4 tabel
+     besar, baru saat itu deltaSyncAllBig() dipanggil. PULL_INTERVAL_ACTIVE_MS
+     di bawah cuma jaring pengaman kalau koneksi realtime putus/gagal reconnect.
    Cocok untuk pola pakai app Keuangan yang biasanya ramai cuma pagi hari saat
    tarik tunai, lalu HP kadang dibiarkan terbuka tapi tidak dipegang. */
-const PUSH_INTERVAL_MS = 30000;         // 30 detik: kirim antrean lokal (kalau ada)
-const PULL_INTERVAL_ACTIVE_MS = 60000;  // 1 menit: delta sync tabel besar, HANYA selagi app aktif/terlihat
-const FULL_RESYNC_INTERVAL_MS = 12*60*60*1000; // 12 jam: jaring pengaman resync penuh (menangkap penghapusan dari perangkat lain)
+const PUSH_INTERVAL_MS = 30000;          // 30 detik: kirim antrean lokal (kalau ada)
+const PULL_INTERVAL_ACTIVE_MS = 600000;  // 10 menit: JARING PENGAMAN saja (bukan pemicu utama lagi).
+                                          // Pemicu utama sekarang event Realtime; timer ini cuma jaga-jaga
+                                          // kalau websocket realtime terputus dan belum sempat reconnect.
+const REALTIME_DEBOUNCE_MS = 2000;       // tunggu 2 detik setelah event realtime pertama sebelum sync,
+                                          // supaya beberapa perubahan yang datang beruntun digabung jadi 1 sync
+const FULL_RESYNC_INTERVAL_MS = 24*60*60*1000; // 24 jam: jaring pengaman resync penuh (menangkap penghapusan dari
+                                                // perangkat lain). Diperlonggar dari 12 jam -- kasus ini jarang
+                                                // terjadi, dan full resync jauh lebih berat dari delta biasa.
 
 /* Tabel besar/terus bertambah yang memakai delta sync berbasis kolom updated_at
    (semua tabel ini sudah punya trigger set_updated_at di database). */
@@ -807,6 +817,37 @@ function stopPullTimer(){
   if(pullTimer){ clearInterval(pullTimer); pullTimer = null; }
 }
 
+/* Realtime: dengar perubahan langsung dari 4 tabel besar lewat 1 koneksi
+   websocket, dan pakai itu sebagai pemicu utama delta sync -- bukan lagi
+   timer tetap. Kalau tidak ada perubahan sama sekali di server, tidak ada
+   request REST yang jalan sampai PULL_INTERVAL_ACTIVE_MS (jaring pengaman).
+   Perlu tabel-nya sudah didaftarkan ke publication supabase_realtime di
+   database (lihat enable_realtime_tabel_besar.sql). */
+let realtimeChannel = null;
+let realtimeDebounceTimer = null;
+function scheduleRealtimeSync(){
+  // debounce: kalau beberapa baris berubah beruntun (mis. proses pembayaran
+  // yang menyentuh 2-3 tabel), gabung jadi satu panggilan sync, bukan banyak.
+  if(realtimeDebounceTimer) clearTimeout(realtimeDebounceTimer);
+  realtimeDebounceTimer = setTimeout(()=>{
+    realtimeDebounceTimer = null;
+    if(navigator.onLine) syncData({includeSmall:false});
+  }, REALTIME_DEBOUNCE_MS);
+}
+function startRealtimeSubscriptions(){
+  if(realtimeChannel) return;
+  realtimeChannel = sb.channel('delta-tabel-besar')
+    .on('postgres_changes', {event:'*', schema:'public', table:'transaksi_saldo'}, scheduleRealtimeSync)
+    .on('postgres_changes', {event:'*', schema:'public', table:'transaksi_toko'}, scheduleRealtimeSync)
+    .on('postgres_changes', {event:'*', schema:'public', table:'tagihan'}, scheduleRealtimeSync)
+    .on('postgres_changes', {event:'*', schema:'public', table:'iuran_detail'}, scheduleRealtimeSync)
+    .subscribe();
+}
+function stopRealtimeSubscriptions(){
+  if(realtimeDebounceTimer){ clearTimeout(realtimeDebounceTimer); realtimeDebounceTimer = null; }
+  if(realtimeChannel){ sb.removeChannel(realtimeChannel); realtimeChannel = null; }
+}
+
 async function bootApp(){
   await openIdb();
   updateOnlineIndicator();
@@ -814,18 +855,20 @@ async function bootApp(){
   renderAll();
   switchTab('santri');
   syncData({includeSmall:true}); // lalu sinkron di belakang layar (delta, atau full kalau memang jatuh tempo/pertama kali)
-  window.addEventListener('online', ()=>{ updateOnlineIndicator(); manualSync(); });
+  window.addEventListener('online', ()=>{ updateOnlineIndicator(); manualSync(); if(!document.hidden) startRealtimeSubscriptions(); });
   window.addEventListener('offline', updateOnlineIndicator);
   setInterval(()=>{ if(navigator.onLine) pushQueueOnly(); }, PUSH_INTERVAL_MS);
   document.addEventListener('visibilitychange', ()=>{
     if(document.hidden){
-      stopPullTimer(); // app disembunyikan -- hentikan pull otomatis sepenuhnya
+      stopPullTimer();               // app disembunyikan -- hentikan pull otomatis sepenuhnya
+      stopRealtimeSubscriptions();   // ...dan tutup koneksi realtime-nya juga
     } else {
       if(navigator.onLine) syncData({includeSmall:true}); // baru dibuka lagi -- segarkan tabel kecil + delta tabel besar
       startPullTimer();
+      startRealtimeSubscriptions();
     }
   });
-  if(!document.hidden) startPullTimer();
+  if(!document.hidden){ startPullTimer(); startRealtimeSubscriptions(); }
   setupHeaderHeightSync();
 }
 
@@ -869,17 +912,32 @@ async function fullSyncBigTables(){
 /* Delta sync SATU tabel: cuma minta baris dengan updated_at > cursor tersimpan,
    lalu gabungkan (upsert, tanpa clear) ke cache lama. Kalau belum ada cursor
    (belum pernah sinkron), ambil semuanya sekali sebagai baseline. */
-async function deltaSyncTable(cfg){
-  const cursor = await idbGetMeta('cursor_'+cfg.key);
-  let query = sb.from(cfg.key).select(cfg.cols).order('updated_at',{ascending:true});
-  if(cursor) query = query.gt('updated_at', cursor);
-  const { data, error } = await query;
+/* Delta sync SEMUA tabel besar sekaligus lewat 1 RPC (delta_sync_besar),
+   menggantikan 4 request sb.from(...) terpisah. Kirim 4 cursor sekaligus,
+   server jalankan 4 sub-select dalam satu koneksi & kembalikan satu payload
+   JSON -- overhead per-request (header/response, termasuk saat kosong)
+   cuma ditanggung sekali per siklus, bukan 4 kali. RLS tetap berlaku persis
+   seperti sebelumnya karena function-nya SECURITY INVOKER. */
+async function deltaSyncAllBig(){
+  const cursors = {};
+  for(const cfg of DELTA_TABLES) cursors[cfg.key] = await idbGetMeta('cursor_'+cfg.key);
+
+  const { data, error } = await sb.rpc('delta_sync_besar', {
+    p_cursor_transaksi_saldo: cursors['transaksi_saldo'] || null,
+    p_cursor_transaksi_toko:  cursors['transaksi_toko']  || null,
+    p_cursor_tagihan:         cursors['tagihan']          || null,
+    p_cursor_iuran_detail:    cursors['iuran_detail']     || null,
+  });
   if(error) throw error;
-  if(data && data.length){
-    await idbUpsertMany(cfg.cache, data);
-    let maxUpdated = cursor || '1970-01-01T00:00:00Z';
-    data.forEach(r=>{ if(r.updated_at && r.updated_at > maxUpdated) maxUpdated = r.updated_at; });
-    await idbSetMeta('cursor_'+cfg.key, maxUpdated);
+
+  for(const cfg of DELTA_TABLES){
+    const rows = (data && data[cfg.key]) || [];
+    if(rows.length){
+      await idbUpsertMany(cfg.cache, rows);
+      let maxUpdated = cursors[cfg.key] || '1970-01-01T00:00:00Z';
+      rows.forEach(r=>{ if(r.updated_at && r.updated_at > maxUpdated) maxUpdated = r.updated_at; });
+      await idbSetMeta('cursor_'+cfg.key, maxUpdated);
+    }
   }
 }
 
@@ -899,7 +957,7 @@ async function syncData(opts){
       await fullSyncBigTables();
       await idbSetMeta('last_full_sync', String(Date.now()));
     } else {
-      for(const cfg of DELTA_TABLES) await deltaSyncTable(cfg);
+      await deltaSyncAllBig();
     }
     await loadFromCache();
     await generateDueRecurringTagihan();
@@ -916,7 +974,7 @@ async function syncData(opts){
 async function deltaPullAndRender(){
   if(!navigator.onLine) return;
   try{
-    for(const cfg of DELTA_TABLES) await deltaSyncTable(cfg);
+    await deltaSyncAllBig();
     await loadFromCache();
     await generateDueRecurringTagihan();
     renderAll();
