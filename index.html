@@ -171,16 +171,21 @@ table.rw tbody tr:hover{background:var(--cream);}
 .toast{position:fixed;bottom:88px;left:50%;transform:translateX(-50%);background:var(--ink);color:#fff;padding:11px 20px;border-radius:30px;font-size:13px;z-index:80;opacity:0;transition:opacity .25s;pointer-events:none;box-shadow:0 8px 22px rgba(0,0,0,.3);}
 .toast.show{opacity:1;animation:popIn .2s ease;}
 
-/* struk cetak */
+/* struk cetak (thermal 58mm / 80mm) */
 #receipt{display:none;}
 @media print{
-  body *{visibility:hidden;}
-  #receipt, #receipt *{visibility:visible;}
-  #receipt{display:block;position:absolute;top:0;left:0;width:58mm;padding:6px;font-family:monospace;font-size:11px;}
+  body>*:not(#receipt){display:none !important;}
+  html,body{background:#fff !important;margin:0 !important;padding:0 !important;}
+  #receipt{display:block;width:var(--paper-w,48mm);padding:1mm 0 8mm;margin:0;}
 }
-#receipt .c{text-align:center;}
-#receipt hr{border:none;border-top:1px dashed #000;margin:6px 0;}
-#receipt .row{display:flex;justify-content:space-between;}
+.struk{font-family:'Courier New',Courier,monospace;font-size:11px;line-height:1.35;color:#000;background:#fff;box-sizing:border-box;word-break:break-word;}
+.struk .c{text-align:center;}
+.struk .b{font-weight:700;}
+.struk hr{border:none;border-top:1px dashed #000;margin:5px 0;}
+.struk .row{display:flex;justify-content:space-between;gap:8px;}
+.struk .row span:last-child{text-align:right;white-space:nowrap;}
+.struk-prev{margin:0 auto 12px;border:1px solid var(--border);border-radius:6px;padding:10px;font-size:12px;max-height:46vh;overflow:auto;box-shadow:var(--shadow-sm);}
+.paper-sel{width:100%;padding:9px;border-radius:9px;border:1px solid var(--border);margin-bottom:10px;background:#fff;}
 
 .qr-wrap{display:none;margin-bottom:12px;border-radius:var(--radius-md);overflow:hidden;border:1px solid var(--border);box-shadow:var(--shadow-sm);}
 .qr-wrap.show{display:block;}
@@ -470,9 +475,16 @@ table.rw tbody tr:hover{background:var(--cream);}
     <button class="modal-close" onclick="closeModal('modalTxResult')">✕</button>
     <h3>Transaksi Tersimpan</h3>
     <div class="card" id="txResultSummary" style="font-size:13.5px"></div>
-    <div class="btn-row" style="margin-top:10px">
-      <button class="btn btn-outline" onclick="printReceipt()">🖨️ Cetak Struk</button>
-      <button class="btn btn-outline" onclick="downloadReceipt()">⬇️ Unduh Struk</button>
+    <div style="margin-top:10px">
+      <select class="paper-sel" onchange="setPaper(this.value)" title="Ukuran kertas">
+        <option value="58">Kertas thermal 58 mm</option>
+        <option value="80">Kertas thermal 80 mm</option>
+      </select>
+      <div class="btn-row">
+        <button class="btn btn-outline" onclick="printReceipt()">🖨️ Cetak</button>
+        <button class="btn btn-outline" onclick="downloadReceipt('png')">⬇️ Unduh PNG</button>
+        <button class="btn btn-outline" onclick="downloadReceipt('txt')">⬇️ Unduh TXT</button>
+      </div>
     </div>
   </div>
 </div>
@@ -568,8 +580,26 @@ table.rw tbody tr:hover{background:var(--cream);}
   </div>
 </div>
 
+<!-- ===== MODAL: struk dari riwayat (pratinjau, cetak, unduh) ===== -->
+<div class="modal-bg" id="modalStruk">
+  <div class="modal">
+    <button class="modal-close" onclick="closeModal('modalStruk')">✕</button>
+    <h3>Bukti Transaksi</h3>
+    <select class="paper-sel" onchange="setPaper(this.value)" title="Ukuran kertas">
+      <option value="58">Kertas thermal 58 mm</option>
+      <option value="80">Kertas thermal 80 mm</option>
+    </select>
+    <div id="strukPreview" class="struk struk-prev"></div>
+    <div class="btn-row">
+      <button class="btn btn-primary" onclick="printReceipt()">🖨️ Cetak</button>
+      <button class="btn btn-outline" onclick="downloadReceipt('png')">⬇️ PNG</button>
+      <button class="btn btn-outline" onclick="downloadReceipt('txt')">⬇️ TXT</button>
+    </div>
+  </div>
+</div>
+
 <!-- receipt hidden, used for print/download -->
-<div id="receipt"></div>
+<div id="receipt" class="struk"></div>
 
 <script>
 /* =====================================================================
@@ -1400,7 +1430,7 @@ async function submitTxForm(){
     <div>${santri.nama}</div>
     <div style="font-size:12px;color:var(--ink-soft)">${keterangan}</div>
     <div style="font-size:20px;font-weight:700;margin-top:6px">${rupiah(jumlah)}</div>`;
-  buildReceiptHtml();
+  buildReceiptHtml(); applyPaper();
   openModal('modalTxResult');
 }
 function namaJenisTagihan(id){
@@ -1408,35 +1438,195 @@ function namaJenisTagihan(id){
   return j ? j.nama : '-';
 }
 
+/* ---------- STRUK THERMAL (58 mm / 80 mm) ----------
+   Satu sumber data (receiptLines) dipakai untuk 3 keluaran: HTML (cetak & pratinjau),
+   gambar PNG, dan teks TXT. */
+function escHtml(v){ return String(v==null?'':v).replace(/[&<>"']/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+function getPaper(){
+  let v = '58';
+  try{ v = localStorage.getItem('paperMm') || '58'; }catch(e){}
+  return v==='80' ? 80 : 58;
+}
+function setPaper(v){
+  try{ localStorage.setItem('paperMm', String(v)); }catch(e){}
+  applyPaper();
+  const d = STATE.lastReceiptData;
+  if(d){ renderStrukPreview(); }
+}
+function applyPaper(){
+  const mm = getPaper();
+  let st = document.getElementById('pageStyle');
+  if(!st){ st = document.createElement('style'); st.id = 'pageStyle'; document.head.appendChild(st); }
+  st.textContent = '@page{size:'+mm+'mm auto;margin:0}';
+  document.documentElement.style.setProperty('--paper-w', mm===80 ? '72mm' : '48mm'); // lebar area cetak efektif
+  document.querySelectorAll('.paper-sel').forEach(el=>{ el.value = String(mm); });
+}
+function receiptLines(d){
+  const r = d.row;
+  const label = {setoran:'TOP UP SALDO', tarik:'TARIK TUNAI', bayar:'BAYAR', toko:'BELANJA TOKO'}[r.jenis] || r.jenis;
+  const waktu = r.created_at ? new Date(r.created_at).toLocaleTimeString('id-ID') : '';
+  const L = [];
+  L.push({k:'c', b:1, t:'PPRQ SENTOL'}, {k:'c', t:'Keuangan Santri'}, {k:'hr'});
+  L.push({k:'row', l:fmtDate(r.tanggal), r:waktu});
+  L.push({k:'t', b:1, t: label + (r.jenis==='bayar' ? ' ('+(r.metode==='tunai'?'Tunai':'Potong Saldo')+')' : '')});
+  if(r.status==='dibatalkan') L.push({k:'c', b:1, t:'** DIBATALKAN **'});
+  if(d.cetakUlang) L.push({k:'c', t:'(cetak ulang)'});
+  L.push({k:'hr'});
+  L.push({k:'t', t:'Nama: '+d.santri.nama});
+  L.push({k:'t', t:'No Induk: '+(d.santri.no_induk||'-')});
+  if(r.keterangan) L.push({k:'t', t:r.keterangan});
+  L.push({k:'hr'});
+  L.push({k:'row', b:1, l:'Jumlah', r:rupiah(r.jumlah)});
+  L.push({k:'row', l: d.cetakUlang ? 'Saldo saat ini' : 'Saldo akhir', r:rupiah(saldoSantri(d.santri.id))});
+  L.push({k:'hr'});
+  L.push({k:'c', t:'Dicatat oleh: '+(d.dicatatOleh||'-')});
+  if(r.id) L.push({k:'c', t:'No: '+String(r.id).slice(-8).toUpperCase()});
+  L.push({k:'c', t:'Terima kasih'});
+  return L;
+}
+function receiptToHtml(lines){
+  return lines.map(x=>{
+    if(x.k==='hr') return '<hr>';
+    if(x.k==='row') return '<div class="row'+(x.b?' b':'')+'"><span>'+escHtml(x.l)+'</span><span>'+escHtml(x.r)+'</span></div>';
+    return '<div class="'+(x.k==='c'?'c':'')+(x.b?' b':'')+'">'+escHtml(x.t)+'</div>';
+  }).join('');
+}
+function wrapCols(txt, cols){
+  const out = [];
+  String(txt).split('\n').forEach(par=>{
+    let cur = '';
+    par.split(' ').forEach(w=>{
+      while(w.length > cols){ if(cur){ out.push(cur); cur=''; } out.push(w.slice(0,cols)); w = w.slice(cols); }
+      const test = cur ? cur+' '+w : w;
+      if(test.length <= cols) cur = test; else { out.push(cur); cur = w; }
+    });
+    out.push(cur);
+  });
+  return out;
+}
+function receiptToText(lines, mm){
+  const cols = mm===80 ? 48 : 32;
+  const out = [];
+  lines.forEach(x=>{
+    if(x.k==='hr') out.push('-'.repeat(cols));
+    else if(x.k==='row'){
+      const l = String(x.l), r = String(x.r);
+      const sp = Math.max(1, cols - l.length - r.length);
+      out.push(l + ' '.repeat(sp) + r);
+    } else wrapCols(x.t, cols).forEach(t=>{
+      out.push(x.k==='c' ? ' '.repeat(Math.max(0, Math.floor((cols - t.length)/2))) + t : t);
+    });
+  });
+  return out.join('\n');
+}
+function receiptToCanvas(lines, mm){
+  const W = mm===80 ? 576 : 384, S = 2, pad = 12, fs = 20, lh = 26;
+  const fnt = b => (b?'bold ':'') + fs + 'px "Courier New", Courier, monospace';
+  const mctx = document.createElement('canvas').getContext('2d');
+  const maxW = W - pad*2;
+  const wrapPx = (txt, b, limit)=>{
+    mctx.font = fnt(b);
+    const out = [];
+    String(txt).split('\n').forEach(par=>{
+      let cur = '';
+      par.split(' ').forEach(w=>{
+        while(mctx.measureText(w).width > limit && w.length > 1){
+          let n = w.length; while(n > 1 && mctx.measureText(w.slice(0,n)).width > limit) n--;
+          if(cur){ out.push(cur); cur=''; }
+          out.push(w.slice(0,n)); w = w.slice(n);
+        }
+        const test = cur ? cur+' '+w : w;
+        if(mctx.measureText(test).width <= limit || !cur) cur = test; else { out.push(cur); cur = w; }
+      });
+      out.push(cur);
+    });
+    return out;
+  };
+  const ops = []; let y = pad;
+  lines.forEach(x=>{
+    if(x.k==='hr'){ ops.push({t:'hr', y:y+lh/2}); y += lh; return; }
+    if(x.k==='row'){
+      mctx.font = fnt(x.b);
+      const rw = mctx.measureText(String(x.r)).width;
+      const ls = wrapPx(x.l, x.b, maxW - rw - 10);
+      ls.forEach((t,i)=>{ ops.push({t:'txt', s:t, b:x.b, a:'l', y}); if(i===0) ops.push({t:'txt', s:String(x.r), b:x.b, a:'r', y}); y += lh; });
+      return;
+    }
+    wrapPx(x.t, x.b, maxW).forEach(t=>{ ops.push({t:'txt', s:t, b:x.b, a:x.k==='c'?'c':'l', y}); y += lh; });
+  });
+  const H = y + pad;
+  const cv = document.createElement('canvas');
+  cv.width = W*S; cv.height = H*S;
+  const ctx = cv.getContext('2d');
+  ctx.scale(S,S);
+  ctx.fillStyle = '#fff'; ctx.fillRect(0,0,W,H);
+  ctx.fillStyle = '#000'; ctx.textBaseline = 'top';
+  ops.forEach(o=>{
+    if(o.t==='hr'){ ctx.save(); ctx.setLineDash([5,4]); ctx.lineWidth = 1.2; ctx.beginPath(); ctx.moveTo(pad,o.y); ctx.lineTo(W-pad,o.y); ctx.stroke(); ctx.restore(); return; }
+    ctx.font = fnt(o.b);
+    ctx.textAlign = o.a==='c' ? 'center' : (o.a==='r' ? 'right' : 'left');
+    const xx = o.a==='c' ? W/2 : (o.a==='r' ? W-pad : pad);
+    ctx.fillText(o.s, xx, o.y + 2);
+  });
+  return cv;
+}
+function renderStrukPreview(){
+  const d = STATE.lastReceiptData; if(!d) return;
+  const mm = getPaper();
+  const el = document.getElementById('strukPreview');
+  el.style.maxWidth = (mm===80 ? 380 : 270) + 'px';
+  el.innerHTML = receiptToHtml(receiptLines(d));
+}
 function buildReceiptHtml(){
   const d = STATE.lastReceiptData; if(!d) return;
-  const label = {setoran:'TOP UP SALDO', tarik:'TARIK TUNAI', bayar:'BAYAR'}[d.row.jenis] || d.row.jenis;
-  document.getElementById('receipt').innerHTML = `
-    <div class="c"><b>PPRQ SENTOL</b><br>Keuangan Santri</div>
-    <hr>
-    <div class="row"><span>${fmtDate(d.row.tanggal)}</span><span>${new Date(d.row.created_at).toLocaleTimeString('id-ID')}</span></div>
-    <div>${label}</div>
-    <hr>
-    <div>Nama: ${d.santri.nama}</div>
-    <div>No Induk: ${d.santri.no_induk||'-'}</div>
-    <div>${d.row.keterangan||''}</div>
-    <hr>
-    <div class="row"><b>Jumlah</b><b>${rupiah(d.row.jumlah)}</b></div>
-    <div class="row"><span>Saldo akhir</span><span>${rupiah(saldoSantri(d.santri.id))}</span></div>
-    <hr>
-    <div class="c">Dicatat oleh: ${d.dicatatOleh}</div>
-  `;
+  applyPaper();
+  document.getElementById('receipt').innerHTML = receiptToHtml(receiptLines(d));
 }
-function printReceipt(){ buildReceiptHtml(); window.print(); }
-function downloadReceipt(){
-  buildReceiptHtml();
-  const el = document.getElementById('receipt');
-  const text = el.innerText;
-  const blob = new Blob([text], {type:'text/plain'});
+function printReceipt(){
+  if(!STATE.lastReceiptData){ toast('Tidak ada struk'); return; }
+  buildReceiptHtml(); window.print();
+}
+function receiptFileName(ext){
+  const d = STATE.lastReceiptData;
+  const nama = (d?.santri?.nama||'transaksi').replace(/[^\w]+/g,'_');
+  return 'struk_'+nama+'_'+(d?.row?.tanggal||todayISO())+'_'+String(d?.row?.id||Date.now()).slice(-6)+'.'+ext;
+}
+function saveBlob(blob, name){
   const a = document.createElement('a');
-  a.href = URL.createObjectURL(blob);
-  a.download = 'struk_'+(STATE.lastReceiptData?.santri.nama||'transaksi').replace(/\s+/g,'_')+'_'+Date.now()+'.txt';
-  a.click();
+  a.href = URL.createObjectURL(blob); a.download = name;
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(()=>URL.revokeObjectURL(a.href), 4000);
+}
+function downloadReceipt(fmt){
+  const d = STATE.lastReceiptData; if(!d){ toast('Tidak ada struk'); return; }
+  const mm = getPaper(), lines = receiptLines(d);
+  if(fmt==='txt'){
+    saveBlob(new Blob([receiptToText(lines, mm)], {type:'text/plain;charset=utf-8'}), receiptFileName('txt'));
+    return;
+  }
+  receiptToCanvas(lines, mm).toBlob(blob=>{
+    if(!blob){ toast('Gagal membuat gambar struk'); return; }
+    saveBlob(blob, receiptFileName('png'));
+  }, 'image/png');
+}
+/* Buka struk dari riwayat: pratinjau + cetak + unduh */
+function bukaStruk(santri, row){
+  STATE.lastReceiptData = {santri, row, dicatatOleh: STATE.profil ? STATE.profil.nama : '-', cetakUlang:true};
+  applyPaper(); renderStrukPreview();
+  openModal('modalStruk');
+}
+function bukaStrukTx(txId){
+  const row = STATE.transaksiSaldo.find(t=>t.id===txId); if(!row) return;
+  const santri = STATE.rwSelectedSantri || STATE.santri.find(s=>s.id===row.santri_id); if(!santri) return;
+  bukaStruk(santri, row);
+}
+function bukaStrukGlobal(santriId, src, id){
+  const santri = STATE.santri.find(x=>x.id===santriId); if(!santri) return;
+  if(src==='toko'){
+    const t = STATE.transaksiToko.find(x=>x.id===id); if(!t) return;
+    bukaStruk(santri, {id:t.id, santri_id:t.santri_id, jenis:'toko', jumlah:t.total, keterangan:t.catatan||'',
+      tanggal:(t.created_at||'').slice(0,10), created_at:t.created_at, status:t.dibatalkan?'dibatalkan':'aktif'});
+  } else bukaStrukTx(id);
 }
 
 /* =====================================================================
@@ -1480,7 +1670,7 @@ function renderRwDetailList(){
       <div style="text-align:right">
         <div class="sd">${rupiah(t.jumlah)}</div>
         <div class="btn-row" style="margin-top:4px">
-          <button class="btn btn-outline" style="padding:5px 8px;font-size:11px" onclick="printOneTx('${t.id}')">Cetak</button>
+          <button class="btn btn-outline" style="padding:5px 8px;font-size:11px" onclick="bukaStrukTx('${t.id}')">🧾 Struk</button>
           ${t.status==='aktif' && !t.transaksi_toko_id ? `<button class="btn btn-danger" style="padding:5px 8px;font-size:11px" onclick="batalkanTx('${t.id}')">Batalkan</button>` : ''}
           ${t.status==='aktif' && t.transaksi_toko_id ? `<div class="meta" style="margin-top:2px">Batalkan lewat aplikasi toko</div>` : ''}
         </div>
@@ -1496,11 +1686,6 @@ function formatRibuanInput(el){
 function angkaFromInput(id){
   const raw = (document.getElementById(id).value||'').replace(/\D/g,'');
   return raw ? Number(raw) : 0;
-}
-function printOneTx(txId){
-  const row = STATE.transaksiSaldo.find(t=>t.id===txId); if(!row) return;
-  STATE.lastReceiptData = {santri: STATE.rwSelectedSantri, row, dicatatOleh: STATE.profil?STATE.profil.nama:'-'};
-  buildReceiptHtml(); window.print();
 }
 async function batalkanTx(txId){
   const row = STATE.transaksiSaldo.find(t=>t.id===txId); if(!row) return;
@@ -1987,10 +2172,10 @@ function openRiwayatGlobalDetail(santriId){
   const s = STATE.santri.find(x=>x.id===santriId); if(!s) return;
   const keu = STATE.transaksiSaldo.filter(t=>t.santri_id===santriId && t.status==='aktif'
       && !(t.jenis==='bayar' && (t.keterangan||'').trim().toLowerCase().startsWith('belanja toko'))) // hindari duplikat dgn transaksi_toko (termasuk yang ada catatan tambahan)
-    .map(t=>({tanggal:t.tanggal, jenis: labelJenis(t.jenis), keterangan:t.keterangan||'', nominal: (t.jenis==='setoran'?1:-1)*Number(t.jumlah),
+    .map(t=>({id:t.id, src:'saldo', tanggal:t.tanggal, jenis: labelJenis(t.jenis), keterangan:t.keterangan||'', nominal: (t.jenis==='setoran'?1:-1)*Number(t.jumlah),
       pengaruhSaldo: !(t.jenis==='bayar' && t.metode==='tunai') })); // bayar tunai tidak memotong saldo
   const toko = STATE.transaksiToko.filter(t=>t.santri_id===santriId)
-    .map(t=>({tanggal: t.created_at.slice(0,10), jenis:'Belanja Toko', keterangan: (t.catatan||''), nominal: -Number(t.total), pengaruhSaldo: true }));
+    .map(t=>({id:t.id, src:'toko', tanggal: t.created_at.slice(0,10), jenis:'Belanja Toko', keterangan: (t.catatan||''), nominal: -Number(t.total), pengaruhSaldo: true }));
   const all = [...keu, ...toko].sort((a,b)=> new Date(b.tanggal)-new Date(a.tanggal));
 
   const now = new Date();
@@ -2017,8 +2202,8 @@ function openRiwayatGlobalDetail(santriId){
         <div style="font-size:12px;color:var(--danger)">Keluar -${rupiah(r.keluar)}</div>
       </div>`;
 
-  const rowsHtml = all.length ? `<table class="rw"><thead><tr><th>Tanggal</th><th>Jenis</th><th>Keterangan</th><th>Nominal</th></tr></thead><tbody>${
-    all.map(x=>`<tr><td>${fmtDate(x.tanggal)}</td><td>${x.jenis}</td><td>${x.keterangan}${x.pengaruhSaldo?'':' <span style="font-size:10px;color:var(--ink-soft)">(tunai, tdk hitung saldo)</span>'}</td><td style="color:${x.nominal<0?'var(--danger)':'var(--ok)'}">${x.nominal<0?'-':'+'}${rupiah(Math.abs(x.nominal))}</td></tr>`).join('')
+  const rowsHtml = all.length ? `<table class="rw"><thead><tr><th>Tanggal</th><th>Jenis</th><th>Keterangan</th><th>Nominal</th><th></th></tr></thead><tbody>${
+    all.map(x=>`<tr><td>${fmtDate(x.tanggal)}</td><td>${x.jenis}</td><td>${x.keterangan}${x.pengaruhSaldo?'':' <span style="font-size:10px;color:var(--ink-soft)">(tunai, tdk hitung saldo)</span>'}</td><td style="color:${x.nominal<0?'var(--danger)':'var(--ok)'}">${x.nominal<0?'-':'+'}${rupiah(Math.abs(x.nominal))}</td><td><button class="btn btn-outline" style="padding:4px 7px;font-size:11px" onclick="bukaStrukGlobal('${santriId}','${x.src}','${x.id}')">🧾</button></td></tr>`).join('')
   }</tbody></table>` : '<div class="empty">Belum ada riwayat.</div>';
 
   document.getElementById('bbTitle').textContent = 'Riwayat — '+s.nama;
